@@ -13,7 +13,6 @@ services:
       MIHOMO_SSH_PORT: ${MIHOMO_SSH_PORT:-22}
       MIHOMO_USER: ${MIHOMO_USER:-root}
       MIHOMO_KEY_FILE: /run/secrets/mihomo_ssh_key
-      MIHOMO_SCRIPT: ${MIHOMO_SCRIPT:-/usr/local/sbin/mihomo.sh}
     secrets:
       - mihomo_ssh_key
 

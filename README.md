@@ -4,7 +4,7 @@
 
 ## 简体中文
 
-`mihomo-manager-webui` 是一个面向 Mihomo 代理环境的本地 Web 管理界面和 Bash 管理脚本集合。浏览器控制台通过 SSH 调用服务器上的 `mihomo.sh`，可以可视化完成订阅更新、服务控制、系统代理、日志查看等操作，同时避免把管理面板暴露到公网。
+`mihomo-manager-webui` 是一个独立的 Mihomo 本地 Web 管理面板。它不依赖额外的管理脚本文件，后端通过 SSH 连接服务器，并使用内置的白名单动作直接管理 Mihomo、订阅配置、proxychains、系统代理、systemd 服务和日志。
 
 仓库地址：
 
@@ -14,46 +14,50 @@ https://github.com/AptimLvStic/mihomo-manager-webui
 
 ### 功能特性
 
-- 分组式交互菜单
-- 简体中文 / English 界面
+- 本地 Web 仪表盘，可视化管理 Mihomo
+- 后端白名单 API，不开放任意命令执行
+- 通过 SSH 直接管理远程服务器
 - 订阅链接和 User-Agent 管理
-- 手动更新订阅
-- 通过 Mihomo 控制接口自动选择可用节点
-- Mihomo systemd 服务管理
+- 订阅拉取、配置生成和 Mihomo 配置校验
+- 自动选择可用代理节点
+- Mihomo systemd 服务启动、停止、重启和状态查看
 - 系统代理配置，支持新 shell 和 apt
 - proxychains4 配置辅助
 - SOCKS5 和 proxychains 连通性测试
 - Mihomo 和订阅更新日志查看
-- 本地 Web 仪表盘，可视化操作常用功能
+- 简体中文 / English 输出设置
+- Docker 和 Docker Compose 部署支持
 
 ### 运行要求
 
-服务器侧需要：
+远程服务器需要：
 
 - Linux + systemd
 - Bash
 - curl
-- Mihomo 安装在 `/usr/local/bin/mihomo`
-- proxychains4
-- 已存在以下辅助脚本：
-  - `/usr/local/sbin/update-mihomo-subscription`
-  - `/usr/local/sbin/select-mihomo-working-proxy`
+- python3
+- Mihomo 安装在 `/usr/local/bin/mihomo` 或位于 `PATH`
+- proxychains4，用于 proxychains 相关功能
+- 服务器允许 SSH 登录
 
-本地 Web UI 需要：
+本地或容器侧需要：
 
-- Node.js 20 或更高版本
+- Node.js 20 或更高版本，或 Docker
 - 可用的 SSH 私钥
 
-### 安装脚本
+### 管理的远程文件
 
-```bash
-install -m 700 mihomo.sh /usr/local/sbin/mihomo.sh
-```
+WebUI 会直接管理以下远程路径：
 
-以 root 身份运行：
-
-```bash
-mihomo.sh menu
+```text
+/etc/mihomo/subscription.env
+/etc/mihomo/config.yaml
+/etc/mihomo/subscription.raw.yaml
+/etc/mihomo/webui.env
+/etc/proxychains4.conf
+/etc/proxychains.conf
+/etc/profile.d/mihomo-proxy.sh
+/etc/apt/apt.conf.d/95mihomo-proxy
 ```
 
 ### 本地 Web UI 部署
@@ -62,6 +66,17 @@ mihomo.sh menu
 
 ```bash
 cp server.config.example.json server.config.json
+```
+
+示例：
+
+```json
+{
+  "host": "1.2.3.4",
+  "port": 22,
+  "user": "root",
+  "identityFile": "/absolute/path/to/private_key"
+}
 ```
 
 启动本地控制台：
@@ -76,7 +91,7 @@ npm start
 http://127.0.0.1:5178
 ```
 
-默认情况下，Web 服务只监听 `127.0.0.1`。后端只开放白名单 API，并通过 SSH 调用服务器上的 `/usr/local/sbin/mihomo.sh`。
+默认情况下，Web 服务只监听 `127.0.0.1`。后端只开放白名单 API，并通过 SSH 在服务器上执行内置管理动作。
 
 也可以使用环境变量启动：
 
@@ -103,7 +118,6 @@ docker run -d \
   -e MIHOMO_SSH_PORT=22 \
   -e MIHOMO_USER=root \
   -e MIHOMO_KEY_FILE=/run/secrets/mihomo_ssh_key \
-  -e MIHOMO_SCRIPT=/usr/local/sbin/mihomo.sh \
   -v /absolute/path/to/private_key:/run/secrets/mihomo_ssh_key:ro \
   mihomo-manager-webui
 ```
@@ -137,7 +151,6 @@ MIHOMO_HOST=1.2.3.4
 MIHOMO_SSH_PORT=22
 MIHOMO_USER=root
 MIHOMO_KEY_PATH=/absolute/path/to/private_key
-MIHOMO_SCRIPT=/usr/local/sbin/mihomo.sh
 ```
 
 启动：
@@ -166,36 +179,26 @@ docker compose down
 
 Compose 文件同样将 Web UI 绑定到 `127.0.0.1:5178`，并通过 Docker secret 挂载 SSH 私钥。请妥善保管 `.env`，因为其中包含服务器地址和本地私钥路径。
 
-### 常用命令
+### 可视化操作
 
-```bash
-mihomo.sh status
-mihomo.sh update
-mihomo.sh set-url
-mihomo.sh set-ua
-mihomo.sh test
-mihomo.sh proxy on
-mihomo.sh proxy off
-mihomo.sh proxy env
-mihomo.sh set-lang zh
-mihomo.sh set-lang en
-```
+WebUI 当前包含以下页面：
 
-让当前 shell 立即使用代理环境变量：
-
-```bash
-eval "$(mihomo.sh proxy env)"
-```
+- 仪表盘：查看服务、订阅、系统代理和 proxychains 状态
+- 订阅：更换订阅链接、设置 User-Agent、更新订阅、选择可用节点
+- 服务：启动、停止、重启 Mihomo，查看监听端口和 systemd 状态
+- 系统代理：开启/关闭系统代理，查看和重建 proxychains 配置
+- 日志：查看 Mihomo 日志和订阅更新日志
+- 设置：切换输出语言，查看连接信息
 
 ### 敏感信息
 
-不要提交订阅链接或 token。脚本会把订阅配置保存在服务器的 `/etc/mihomo/subscription.env`，显示订阅链接时会自动脱敏敏感查询参数。
+不要提交订阅链接或 token。WebUI 会把订阅配置保存在服务器的 `/etc/mihomo/subscription.env`，显示订阅链接时会自动脱敏敏感查询参数。
 
 本地 `server.config.json` 已被 Git 忽略，因为它可能包含个人服务器地址和 SSH 私钥路径。
 
 ## English
 
-`mihomo-manager-webui` is a local Web UI and Bash management toolkit for a Mihomo-based proxy setup. The browser dashboard calls `mihomo.sh` on your server over SSH, so routine operations can be managed visually without exposing an admin panel to the public internet.
+`mihomo-manager-webui` is a standalone local Web UI for managing a Mihomo proxy setup. It does not depend on an external management script file. The backend connects to your server over SSH and uses built-in whitelisted actions to manage Mihomo, subscriptions, proxychains, system proxy settings, systemd services, and logs directly.
 
 Repository:
 
@@ -205,46 +208,50 @@ https://github.com/AptimLvStic/mihomo-manager-webui
 
 ### Features
 
-- Grouped interactive menu
-- Simplified Chinese / English UI
+- Local web dashboard for visual Mihomo management
+- Whitelisted backend API, with no arbitrary command execution endpoint
+- Direct remote server management over SSH
 - Subscription URL and User-Agent management
-- Manual subscription refresh
-- Automatic working-node selection through the Mihomo controller
-- Mihomo systemd service helpers
+- Subscription download, config generation, and Mihomo config validation
+- Automatic working-node selection
+- Mihomo systemd start, stop, restart, and status helpers
 - System proxy helpers for new shells and apt
 - proxychains4 configuration helper
 - SOCKS5 and proxychains connectivity tests
 - Log viewers for Mihomo and subscription updates
-- Local web dashboard for visual operations
+- Simplified Chinese / English output setting
+- Docker and Docker Compose deployment support
 
 ### Requirements
 
-On the server:
+On the remote server:
 
 - Linux with systemd
 - Bash
 - curl
-- Mihomo installed at `/usr/local/bin/mihomo`
-- proxychains4
-- Existing helper scripts:
-  - `/usr/local/sbin/update-mihomo-subscription`
-  - `/usr/local/sbin/select-mihomo-working-proxy`
+- python3
+- Mihomo installed at `/usr/local/bin/mihomo` or available in `PATH`
+- proxychains4 for proxychains-related features
+- SSH login access
 
-For the local Web UI:
+On the local or container side:
 
-- Node.js 20 or newer
+- Node.js 20 or newer, or Docker
 - A usable SSH private key
 
-### Script Install
+### Remote Files Managed
 
-```bash
-install -m 700 mihomo.sh /usr/local/sbin/mihomo.sh
-```
+The WebUI directly manages these remote paths:
 
-Run as root:
-
-```bash
-mihomo.sh menu
+```text
+/etc/mihomo/subscription.env
+/etc/mihomo/config.yaml
+/etc/mihomo/subscription.raw.yaml
+/etc/mihomo/webui.env
+/etc/proxychains4.conf
+/etc/proxychains.conf
+/etc/profile.d/mihomo-proxy.sh
+/etc/apt/apt.conf.d/95mihomo-proxy
 ```
 
 ### Local Web UI Deployment
@@ -253,6 +260,17 @@ Copy the example config and fill in your server details:
 
 ```bash
 cp server.config.example.json server.config.json
+```
+
+Example:
+
+```json
+{
+  "host": "1.2.3.4",
+  "port": 22,
+  "user": "root",
+  "identityFile": "/absolute/path/to/private_key"
+}
 ```
 
 Start the local dashboard:
@@ -267,7 +285,7 @@ Open:
 http://127.0.0.1:5178
 ```
 
-By default, the web server only listens on `127.0.0.1`. The backend exposes only whitelisted API actions and uses SSH to run `/usr/local/sbin/mihomo.sh` on the server.
+By default, the web server only listens on `127.0.0.1`. The backend exposes only whitelisted API actions and runs built-in management actions on the server over SSH.
 
 You can also configure it with environment variables:
 
@@ -294,7 +312,6 @@ docker run -d \
   -e MIHOMO_SSH_PORT=22 \
   -e MIHOMO_USER=root \
   -e MIHOMO_KEY_FILE=/run/secrets/mihomo_ssh_key \
-  -e MIHOMO_SCRIPT=/usr/local/sbin/mihomo.sh \
   -v /absolute/path/to/private_key:/run/secrets/mihomo_ssh_key:ro \
   mihomo-manager-webui
 ```
@@ -328,7 +345,6 @@ MIHOMO_HOST=1.2.3.4
 MIHOMO_SSH_PORT=22
 MIHOMO_USER=root
 MIHOMO_KEY_PATH=/absolute/path/to/private_key
-MIHOMO_SCRIPT=/usr/local/sbin/mihomo.sh
 ```
 
 Start:
@@ -357,29 +373,19 @@ docker compose down
 
 The Compose file also binds the UI to `127.0.0.1:5178` and mounts the SSH key as a Docker secret. Keep `.env` private because it contains your server address and local key path.
 
-### Common Commands
+### Visual Operations
 
-```bash
-mihomo.sh status
-mihomo.sh update
-mihomo.sh set-url
-mihomo.sh set-ua
-mihomo.sh test
-mihomo.sh proxy on
-mihomo.sh proxy off
-mihomo.sh proxy env
-mihomo.sh set-lang zh
-mihomo.sh set-lang en
-```
+The WebUI currently includes these pages:
 
-Enable proxy variables for the current shell:
-
-```bash
-eval "$(mihomo.sh proxy env)"
-```
+- Dashboard: service, subscription, system proxy, and proxychains status
+- Subscription: replace subscription URL, set User-Agent, update subscription, select a working node
+- Service: start, stop, restart Mihomo, view listening ports and systemd status
+- System Proxy: enable/disable system proxy, view and recreate proxychains config
+- Logs: view Mihomo logs and subscription update logs
+- Settings: switch output language and view connection details
 
 ### Sensitive Data
 
-Do not commit subscription URLs or tokens. This script stores subscription settings in `/etc/mihomo/subscription.env` on the server and masks sensitive query parameters when displaying URLs.
+Do not commit subscription URLs or tokens. The WebUI stores subscription settings in `/etc/mihomo/subscription.env` on the server and masks sensitive query parameters when displaying URLs.
 
 The local `server.config.json` file is ignored by Git because it may contain personal server addresses and SSH key paths.

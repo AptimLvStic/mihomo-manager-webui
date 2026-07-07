@@ -124,11 +124,11 @@ async function loadConfig() {
     setConnection(false, payload.error || "连接配置读取失败");
     return;
   }
-  const { host, port, user, scriptPath } = payload.data;
+  const { host, port, user, mode } = payload.data;
   document.querySelector("#serverLabel").textContent = `${user}@${host}:${port}`;
   document.querySelector("#configHost").textContent = `${host}:${port}`;
   document.querySelector("#configUser").textContent = user;
-  document.querySelector("#configScript").textContent = scriptPath;
+  document.querySelector("#configScript").textContent = mode;
 }
 
 async function refreshStatus() {

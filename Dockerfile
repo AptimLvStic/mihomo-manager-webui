@@ -14,8 +14,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
   PORT=5178 \
-  LISTEN_HOST=0.0.0.0 \
-  MIHOMO_SCRIPT=/usr/local/sbin/mihomo.sh
+  LISTEN_HOST=0.0.0.0
 
 EXPOSE 5178
 
