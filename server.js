@@ -6,6 +6,7 @@ import { extname, join, normalize, resolve } from "node:path";
 const rootDir = resolve(".");
 const publicDir = join(rootDir, "public");
 const port = Number(process.env.PORT || 5178);
+const listenHost = process.env.LISTEN_HOST || "127.0.0.1";
 
 const config = loadConfig();
 const scriptPath = config.scriptPath || "/usr/local/sbin/mihomo.sh";
@@ -55,8 +56,8 @@ createServer(async (req, res) => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
-}).listen(port, "127.0.0.1", () => {
-  console.log(`Mihomo Manager UI listening on http://127.0.0.1:${port}`);
+}).listen(port, listenHost, () => {
+  console.log(`Mihomo Manager UI listening on http://${listenHost}:${port}`);
 });
 
 function loadConfig() {

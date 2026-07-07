@@ -71,6 +71,93 @@ You can also configure it with environment variables:
 MIHOMO_HOST=1.2.3.4 MIHOMO_USER=root MIHOMO_KEY=/path/to/key npm start
 ```
 
+## Docker Deployment
+
+Build the image:
+
+```bash
+docker build -t mihomo-manager-sh .
+```
+
+Run the container:
+
+```bash
+docker run -d \
+  --name mihomo-manager-sh \
+  --restart unless-stopped \
+  -p 127.0.0.1:5178:5178 \
+  -e MIHOMO_HOST=1.2.3.4 \
+  -e MIHOMO_SSH_PORT=22 \
+  -e MIHOMO_USER=root \
+  -e MIHOMO_KEY_FILE=/run/secrets/mihomo_ssh_key \
+  -e MIHOMO_SCRIPT=/usr/local/sbin/mihomo.sh \
+  -v /absolute/path/to/private_key:/run/secrets/mihomo_ssh_key:ro \
+  mihomo-manager-sh
+```
+
+Open:
+
+```text
+http://127.0.0.1:5178
+```
+
+The container listens on `0.0.0.0` internally, but the example publishes it only
+to `127.0.0.1` on the host. The entrypoint copies the mounted private key to a
+temporary file with `600` permissions before starting Node, which avoids common
+OpenSSH permission errors.
+
+Stop and remove:
+
+```bash
+docker rm -f mihomo-manager-sh
+```
+
+## Docker Compose Deployment
+
+Create an environment file:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```bash
+MIHOMO_HOST=1.2.3.4
+MIHOMO_SSH_PORT=22
+MIHOMO_USER=root
+MIHOMO_KEY_PATH=/absolute/path/to/private_key
+MIHOMO_SCRIPT=/usr/local/sbin/mihomo.sh
+```
+
+Start:
+
+```bash
+docker compose up -d --build
+```
+
+Open:
+
+```text
+http://127.0.0.1:5178
+```
+
+View logs:
+
+```bash
+docker compose logs -f
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
+The Compose file also binds the UI to `127.0.0.1:5178` and mounts the SSH key as
+a Docker secret. Keep `.env` private because it contains your server address and
+local key path.
+
 ## Common Commands
 
 ```bash

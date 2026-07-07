@@ -1,0 +1,22 @@
+services:
+  mihomo-manager:
+    build:
+      context: .
+    container_name: mihomo-manager-sh
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5178:5178"
+    environment:
+      LISTEN_HOST: 0.0.0.0
+      PORT: 5178
+      MIHOMO_HOST: ${MIHOMO_HOST}
+      MIHOMO_SSH_PORT: ${MIHOMO_SSH_PORT:-22}
+      MIHOMO_USER: ${MIHOMO_USER:-root}
+      MIHOMO_KEY_FILE: /run/secrets/mihomo_ssh_key
+      MIHOMO_SCRIPT: ${MIHOMO_SCRIPT:-/usr/local/sbin/mihomo.sh}
+    secrets:
+      - mihomo_ssh_key
+
+secrets:
+  mihomo_ssh_key:
+    file: ${MIHOMO_KEY_PATH}
