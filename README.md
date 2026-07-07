@@ -1,9 +1,15 @@
-# mihomo.sh
+# mihomo-manager-webui
 
-`mihomo.sh` is a small Bash management script for a Mihomo-based proxy setup.
-It also includes a local browser UI that calls the script over SSH, so routine
-operations can be done visually without exposing a management panel to the
-public internet.
+`mihomo-manager-webui` is a local Web UI and Bash management toolkit for a
+Mihomo-based proxy setup. The browser dashboard calls `mihomo.sh` over SSH, so
+routine operations can be done visually without exposing a management panel to
+the public internet.
+
+Repository:
+
+```text
+https://github.com/AptimLvStic/mihomo-manager-webui
+```
 
 ## Features
 
@@ -30,7 +36,7 @@ public internet.
   - `/usr/local/sbin/update-mihomo-subscription`
   - `/usr/local/sbin/select-mihomo-working-proxy`
 
-## Install
+## Script Install
 
 ```bash
 install -m 700 mihomo.sh /usr/local/sbin/mihomo.sh
@@ -42,7 +48,7 @@ Run as root:
 mihomo.sh menu
 ```
 
-## Local Web UI
+## Local Web UI Deployment
 
 Copy the example config and fill in your server details:
 
@@ -76,14 +82,14 @@ MIHOMO_HOST=1.2.3.4 MIHOMO_USER=root MIHOMO_KEY=/path/to/key npm start
 Build the image:
 
 ```bash
-docker build -t mihomo-manager-sh .
+docker build -t mihomo-manager-webui .
 ```
 
 Run the container:
 
 ```bash
 docker run -d \
-  --name mihomo-manager-sh \
+  --name mihomo-manager-webui \
   --restart unless-stopped \
   -p 127.0.0.1:5178:5178 \
   -e MIHOMO_HOST=1.2.3.4 \
@@ -92,7 +98,7 @@ docker run -d \
   -e MIHOMO_KEY_FILE=/run/secrets/mihomo_ssh_key \
   -e MIHOMO_SCRIPT=/usr/local/sbin/mihomo.sh \
   -v /absolute/path/to/private_key:/run/secrets/mihomo_ssh_key:ro \
-  mihomo-manager-sh
+  mihomo-manager-webui
 ```
 
 Open:
@@ -109,7 +115,7 @@ OpenSSH permission errors.
 Stop and remove:
 
 ```bash
-docker rm -f mihomo-manager-sh
+docker rm -f mihomo-manager-webui
 ```
 
 ## Docker Compose Deployment

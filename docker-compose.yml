@@ -2,7 +2,7 @@ services:
   mihomo-manager:
     build:
       context: .
-    container_name: mihomo-manager-sh
+    container_name: mihomo-manager-webui
     restart: unless-stopped
     ports:
       - "127.0.0.1:5178:5178"
