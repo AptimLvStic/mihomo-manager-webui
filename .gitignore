@@ -1,0 +1,9 @@
+*.log
+*.tmp
+*.bak
+*.backup.*
+*.gz
+*.metadb
+subscription.env
+config.yaml
+subscription.raw.yaml
