@@ -14,12 +14,14 @@ https://github.com/AptimLvStic/mihomo-manager-webui
 
 ### 功能特性
 
-- 本地 Web 仪表盘，可视化管理 Mihomo
+- 借鉴 Clash Verge 的侧边导航和分栏布局，本地 Web 仪表盘可视化管理 Mihomo
 - 后端白名单 API，不开放任意命令执行
 - 通过 SSH 直接管理远程服务器
 - 订阅链接和 User-Agent 管理
 - 订阅拉取、配置生成和 Mihomo 配置校验
 - 自动选择可用代理节点
+- 代理组视图，支持查看当前策略、手动切换节点和批量延迟测试
+- 规则视图，支持查看当前加载规则、规则类型统计和前 500 条规则明细
 - Mihomo systemd 服务启动、停止、重启和状态查看
 - 系统代理配置，支持新 shell 和 apt
 - proxychains4 配置辅助
@@ -37,6 +39,7 @@ https://github.com/AptimLvStic/mihomo-manager-webui
 - curl
 - python3
 - Mihomo 安装在 `/usr/local/bin/mihomo` 或位于 `PATH`
+- Mihomo external controller 可在服务器本机 `127.0.0.1:9090` 访问
 - proxychains4，用于 proxychains 相关功能
 - 服务器允许 SSH 登录
 
@@ -184,9 +187,11 @@ Compose 文件同样将 Web UI 绑定到 `127.0.0.1:5178`，并通过 Docker sec
 WebUI 当前包含以下页面：
 
 - 仪表盘：查看服务、订阅、系统代理和 proxychains 状态
+- 代理：按 Mihomo 代理组查看节点、当前策略、节点延迟，支持手动切换和批量测速
 - 订阅：更换订阅链接、设置 User-Agent、更新订阅、选择可用节点
+- 规则：查看当前加载规则、规则类型统计和规则明细
 - 服务：启动、停止、重启 Mihomo，查看监听端口和 systemd 状态
-- 系统代理：开启/关闭系统代理，查看和重建 proxychains 配置
+- 系统：开启/关闭系统代理，查看和重建 proxychains 配置
 - 日志：查看 Mihomo 日志和订阅更新日志
 - 设置：切换输出语言，查看连接信息
 
@@ -208,12 +213,14 @@ https://github.com/AptimLvStic/mihomo-manager-webui
 
 ### Features
 
-- Local web dashboard for visual Mihomo management
+- Clash Verge inspired sidebar navigation and split-pane local dashboard for visual Mihomo management
 - Whitelisted backend API, with no arbitrary command execution endpoint
 - Direct remote server management over SSH
 - Subscription URL and User-Agent management
 - Subscription download, config generation, and Mihomo config validation
 - Automatic working-node selection
+- Proxy group view for current policy, manual node switching, and grouped delay tests
+- Rules view for loaded-rule inspection, rule type statistics, and the first 500 rule entries
 - Mihomo systemd start, stop, restart, and status helpers
 - System proxy helpers for new shells and apt
 - proxychains4 configuration helper
@@ -231,6 +238,7 @@ On the remote server:
 - curl
 - python3
 - Mihomo installed at `/usr/local/bin/mihomo` or available in `PATH`
+- Mihomo external controller reachable on the server at `127.0.0.1:9090`
 - proxychains4 for proxychains-related features
 - SSH login access
 
@@ -378,9 +386,11 @@ The Compose file also binds the UI to `127.0.0.1:5178` and mounts the SSH key as
 The WebUI currently includes these pages:
 
 - Dashboard: service, subscription, system proxy, and proxychains status
+- Proxies: inspect Mihomo proxy groups, current policies, node latency, manual switching, and grouped delay tests
 - Subscription: replace subscription URL, set User-Agent, update subscription, select a working node
+- Rules: inspect currently loaded rules, rule type statistics, and rule entries
 - Service: start, stop, restart Mihomo, view listening ports and systemd status
-- System Proxy: enable/disable system proxy, view and recreate proxychains config
+- System: enable/disable system proxy, view and recreate proxychains config
 - Logs: view Mihomo logs and subscription update logs
 - Settings: switch output language and view connection details
 

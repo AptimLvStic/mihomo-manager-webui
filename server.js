@@ -112,6 +112,45 @@ async function handleApi(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/proxies") {
+    const result = await runRemoteScript(proxiesScript(), 60_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/proxies/select") {
+    const body = await readBody(req);
+    const group = String(body.group || "").trim();
+    const name = String(body.name || "").trim();
+    if (!group || !name) {
+      sendJson(res, 400, { ok: false, error: "Proxy group and node name are required." });
+      return;
+    }
+    const result = await runRemoteScript(selectProxyScript(group, name), 60_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/proxies/delays") {
+    const body = await readBody(req);
+    const names = Array.isArray(body.names)
+      ? body.names.map((name) => String(name || "").trim()).filter(Boolean).slice(0, 120)
+      : [];
+    if (!names.length) {
+      sendJson(res, 400, { ok: false, error: "At least one proxy node name is required." });
+      return;
+    }
+    const result = await runRemoteScript(delayScript(names), 120_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/rules") {
+    const result = await runRemoteScript(rulesScript(), 60_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/action") {
     const body = await readBody(req);
     const action = String(body.action || "");
@@ -336,6 +375,144 @@ function portsScript() {
 if [ "$WEBUI_LANG" = zh ]; then printf 'Mihomo 监听端口：\n'; else printf 'Mihomo listening ports:\n'; fi
 ss -ltnp 2>/dev/null | grep -E '127\\.0\\.0\\.1:(7890|7891|9090)\\b' || true
 `;
+}
+
+function controllerJsonPython(body) {
+  return `${remoteBase()}
+python3 - <<'PY'
+${body}
+PY
+`;
+}
+
+function proxiesScript() {
+  return controllerJsonPython(String.raw`import json
+import urllib.request
+
+BASE = "http://127.0.0.1:9090"
+
+def jget(path, timeout=10):
+    with urllib.request.urlopen(BASE + path, timeout=timeout) as resp:
+        return json.load(resp)
+
+payload = jget("/proxies")
+proxies = payload.get("proxies", {})
+groups = []
+nodes = {}
+
+for name, item in proxies.items():
+    options = item.get("all") or []
+    if options:
+        groups.append({
+            "name": name,
+            "type": item.get("type"),
+            "now": item.get("now"),
+            "options": options,
+            "optionCount": len(options),
+        })
+    else:
+        history = item.get("history") or []
+        delay = None
+        if history:
+            last = history[-1]
+            delay = last.get("delay")
+        nodes[name] = {
+            "name": name,
+            "type": item.get("type"),
+            "udp": item.get("udp"),
+            "delay": delay,
+        }
+
+print(json.dumps({"groups": groups, "nodes": nodes}, ensure_ascii=False))`);
+}
+
+function rulesScript() {
+  return controllerJsonPython(String.raw`import collections
+import json
+import urllib.request
+
+BASE = "http://127.0.0.1:9090"
+
+def jget(path, timeout=10):
+    with urllib.request.urlopen(BASE + path, timeout=timeout) as resp:
+        return json.load(resp)
+
+payload = jget("/rules")
+rules = payload.get("rules", [])
+type_counter = collections.Counter()
+policy_counter = collections.Counter()
+items = []
+
+for index, rule in enumerate(rules):
+    rule_type = rule.get("type") or rule.get("Type") or "Unknown"
+    payload_value = rule.get("payload") or rule.get("Payload") or ""
+    proxy = rule.get("proxy") or rule.get("Proxy") or ""
+    type_counter[rule_type] += 1
+    if proxy:
+        policy_counter[proxy] += 1
+    if index < 500:
+        items.append({
+            "index": index + 1,
+            "type": rule_type,
+            "payload": payload_value,
+            "proxy": proxy,
+        })
+
+print(json.dumps({
+    "total": len(rules),
+    "types": dict(type_counter.most_common()),
+    "policies": dict(policy_counter.most_common(20)),
+    "rules": items,
+}, ensure_ascii=False))`);
+}
+
+function selectProxyScript(group, name) {
+  const payload = Buffer.from(JSON.stringify({ group, name }), "utf8").toString("base64");
+  return controllerJsonPython(String.raw`import base64
+import json
+import urllib.parse
+import urllib.request
+
+BASE = "http://127.0.0.1:9090"
+payload = json.loads(base64.b64decode("${payload}").decode("utf-8"))
+group = payload["group"]
+name = payload["name"]
+body = json.dumps({"name": name}).encode("utf-8")
+request = urllib.request.Request(
+    BASE + "/proxies/" + urllib.parse.quote(group, safe=""),
+    data=body,
+    method="PUT",
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(request, timeout=10) as resp:
+    resp.read()
+print(json.dumps({"selected": {"group": group, "name": name}}, ensure_ascii=False))`);
+}
+
+function delayScript(names) {
+  const payload = Buffer.from(JSON.stringify({ names }), "utf8").toString("base64");
+  return controllerJsonPython(String.raw`import base64
+import json
+import urllib.parse
+import urllib.request
+
+BASE = "http://127.0.0.1:9090"
+URL = "https://www.gstatic.com/generate_204"
+payload = json.loads(base64.b64decode("${payload}").decode("utf-8"))
+result = {}
+
+for name in payload.get("names", [])[:120]:
+    encoded = urllib.parse.quote(name, safe="")
+    url = BASE + f"/proxies/{encoded}/delay?timeout=5000&url={urllib.parse.quote(URL, safe='')}"
+    try:
+        with urllib.request.urlopen(url, timeout=8) as resp:
+            data = json.load(resp)
+        delay = data.get("delay")
+        result[name] = delay if isinstance(delay, (int, float)) and delay > 0 else None
+    except Exception:
+        result[name] = None
+
+print(json.dumps({"delays": result}, ensure_ascii=False))`);
 }
 
 function showUrlScript() {
@@ -886,4 +1063,29 @@ function readBody(req) {
 function sendJson(res, status, payload) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
+}
+
+function sendJsonResult(res, result) {
+  if (result.code !== 0) {
+    sendJson(res, 500, result);
+    return;
+  }
+  try {
+    sendJson(res, 200, {
+      ok: true,
+      code: result.code,
+      signal: result.signal,
+      data: JSON.parse(result.stdout || "{}"),
+      stderr: result.stderr,
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      code: result.code,
+      signal: result.signal,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      error: `Failed to parse controller JSON: ${error.message}`,
+    });
+  }
 }

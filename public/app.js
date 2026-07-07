@@ -1,20 +1,27 @@
 const state = {
   activeView: "dashboard",
   busy: false,
+  proxyData: null,
+  selectedProxyGroup: "",
+  proxyDelays: {},
 };
 
 const titles = {
   dashboard: "仪表盘",
+  proxies: "代理",
   subscription: "订阅",
+  rules: "规则",
   service: "服务",
-  proxy: "系统代理",
+  proxy: "系统",
   logs: "日志",
   settings: "设置",
 };
 
 const outputTargets = {
   dashboard: document.querySelector("#statusOutput"),
+  proxies: document.querySelector("#proxyGroupMeta"),
   subscription: document.querySelector("#subscriptionOutput"),
+  rules: document.querySelector("#rulesSummary"),
   service: document.querySelector("#serviceOutput"),
   proxy: document.querySelector("#proxyOutput"),
   logs: document.querySelector("#logsOutput"),
@@ -39,7 +46,6 @@ const actionTarget = {
   start: "service",
   stop: "service",
   restart: "service",
-  select: "subscription",
   "proxy-on": "proxy",
   "proxy-off": "proxy",
   proxychains: "proxy",
@@ -103,6 +109,23 @@ document.querySelector("#loadLogsBtn").addEventListener("click", async () => {
   await fetchResult(`/api/logs?target=${encodeURIComponent(target)}&lines=${encodeURIComponent(lines)}`, "logs");
 });
 
+document.querySelector("#reloadProxiesBtn").addEventListener("click", () => loadProxies(true));
+document.querySelector("#delayGroupBtn").addEventListener("click", () => testSelectedGroupDelays());
+document.querySelector("#loadRulesBtn").addEventListener("click", () => loadRules());
+
+document.querySelector("#proxyGroups").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-proxy-group]");
+  if (!button) return;
+  state.selectedProxyGroup = button.dataset.proxyGroup;
+  renderProxies();
+});
+
+document.querySelector("#proxyNodes").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-proxy-select]");
+  if (!button) return;
+  await selectProxyNode(button.dataset.proxyGroup, button.dataset.proxySelect);
+});
+
 await loadConfig();
 await refreshStatus();
 
@@ -115,6 +138,9 @@ function setView(view) {
     element.classList.toggle("active", element.dataset.view === view);
   });
   document.querySelector("#viewTitle").textContent = titles[view] || view;
+  if (view === "proxies" && !state.proxyData) {
+    loadProxies();
+  }
 }
 
 async function loadConfig() {
@@ -151,6 +177,9 @@ async function runAction(action) {
   const result = await postJson("/api/action", { action }, target);
   if (result?.ok) {
     await refreshStatus();
+    if (action === "select" && state.activeView === "proxies") {
+      await loadProxies(true);
+    }
   }
 }
 
@@ -203,6 +232,185 @@ async function postJson(url, body, target) {
   }
 }
 
+async function loadProxies(force = false) {
+  if (state.proxyData && !force) {
+    renderProxies();
+    return;
+  }
+  setBusy(true);
+  document.querySelector("#proxyGroups").textContent = "正在读取代理组...";
+  document.querySelector("#proxyNodes").textContent = "";
+  try {
+    const response = await fetch("/api/proxies");
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || payload.stderr || "读取代理组失败");
+    state.proxyData = payload.data;
+    if (!state.selectedProxyGroup) {
+      const preferred = state.proxyData.groups.find((group) => group.name === "Proxies")
+        || state.proxyData.groups.find((group) => group.name === "GLOBAL")
+        || state.proxyData.groups[0];
+      state.selectedProxyGroup = preferred?.name || "";
+    }
+    renderProxies();
+    toast("代理组已刷新");
+  } catch (error) {
+    document.querySelector("#proxyGroups").textContent = error.message;
+    toast("读取代理组失败");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function renderProxies() {
+  const groupsContainer = document.querySelector("#proxyGroups");
+  const nodesContainer = document.querySelector("#proxyNodes");
+  groupsContainer.innerHTML = "";
+  nodesContainer.innerHTML = "";
+
+  const groups = state.proxyData?.groups || [];
+  if (!groups.length) {
+    groupsContainer.textContent = "没有读取到代理组。";
+    document.querySelector("#proxyGroupTitle").textContent = "节点";
+    document.querySelector("#proxyGroupMeta").textContent = "请先刷新代理组。";
+    return;
+  }
+
+  if (!groups.some((group) => group.name === state.selectedProxyGroup)) {
+    state.selectedProxyGroup = groups[0].name;
+  }
+
+  for (const group of groups) {
+    const button = document.createElement("button");
+    button.className = `proxy-group-item${group.name === state.selectedProxyGroup ? " active" : ""}`;
+    button.type = "button";
+    button.dataset.proxyGroup = group.name;
+    button.innerHTML = `
+      <span class="proxy-group-name">${escapeHtml(group.name)}</span>
+      <span class="proxy-group-meta">${escapeHtml(group.type || "Group")} · ${group.optionCount} 节点</span>
+      <span class="proxy-group-now">${escapeHtml(group.now || "--")}</span>
+    `;
+    groupsContainer.appendChild(button);
+  }
+
+  const group = groups.find((item) => item.name === state.selectedProxyGroup);
+  document.querySelector("#proxyGroupTitle").textContent = group?.name || "节点";
+  document.querySelector("#proxyGroupMeta").textContent = group
+    ? `${group.type || "Group"} · 当前：${group.now || "--"}`
+    : "选择一个代理组查看节点";
+
+  for (const option of group?.options || []) {
+    const node = state.proxyData.nodes[option] || { name: option, type: "Group" };
+    const delay = state.proxyDelays[option] ?? node.delay;
+    const active = option === group.now;
+    const card = document.createElement("button");
+    card.className = `node-card${active ? " active" : ""}`;
+    card.type = "button";
+    card.dataset.proxyGroup = group.name;
+    card.dataset.proxySelect = option;
+    card.innerHTML = `
+      <span class="node-title">${escapeHtml(option)}</span>
+      <span class="node-meta">${escapeHtml(node.type || "Node")}</span>
+      <span class="node-delay ${delay ? "ok" : ""}">${formatDelay(delay)}</span>
+    `;
+    nodesContainer.appendChild(card);
+  }
+}
+
+async function selectProxyNode(group, name) {
+  setBusy(true);
+  try {
+    const response = await fetch("/api/proxies/select", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ group, name }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || payload.stderr || "切换节点失败");
+    toast(`已切换：${name}`);
+    await loadProxies(true);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function testSelectedGroupDelays() {
+  const group = state.proxyData?.groups?.find((item) => item.name === state.selectedProxyGroup);
+  if (!group) {
+    toast("请先选择代理组");
+    return;
+  }
+  const names = group.options.filter((name) => state.proxyData.nodes[name]).slice(0, 120);
+  if (!names.length) {
+    toast("当前代理组没有可测速节点");
+    return;
+  }
+  setBusy(true);
+  document.querySelector("#proxyGroupMeta").textContent = `正在测试 ${names.length} 个节点...`;
+  try {
+    const response = await fetch("/api/proxies/delays", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ names }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || payload.stderr || "测速失败");
+    state.proxyDelays = { ...state.proxyDelays, ...payload.data.delays };
+    renderProxies();
+    toast("测速完成");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function loadRules() {
+  setBusy(true);
+  document.querySelector("#rulesSummary").textContent = "正在读取规则...";
+  document.querySelector("#ruleStats").innerHTML = "";
+  document.querySelector("#ruleList").textContent = "";
+  try {
+    const response = await fetch("/api/rules");
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || payload.stderr || "读取规则失败");
+    renderRules(payload.data);
+    toast("规则已读取");
+  } catch (error) {
+    document.querySelector("#rulesSummary").textContent = error.message;
+    toast("读取规则失败");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function renderRules(data) {
+  document.querySelector("#rulesSummary").textContent = `共 ${data.total} 条规则，列表显示前 ${data.rules.length} 条`;
+  const stats = document.querySelector("#ruleStats");
+  stats.innerHTML = "";
+  for (const [type, count] of Object.entries(data.types || {}).slice(0, 12)) {
+    const chip = document.createElement("span");
+    chip.className = "rule-chip";
+    chip.textContent = `${type}: ${count}`;
+    stats.appendChild(chip);
+  }
+
+  const list = document.querySelector("#ruleList");
+  list.innerHTML = "";
+  for (const rule of data.rules || []) {
+    const row = document.createElement("div");
+    row.className = "rule-row";
+    row.innerHTML = `
+      <span class="rule-index">${rule.index}</span>
+      <span class="rule-type">${escapeHtml(rule.type || "--")}</span>
+      <span class="rule-payload">${escapeHtml(rule.payload || "--")}</span>
+      <span class="rule-policy">${escapeHtml(rule.proxy || "--")}</span>
+    `;
+    list.appendChild(row);
+  }
+}
+
 function writeResult(target, payload) {
   const lines = [];
   if (payload.stdout) lines.push(payload.stdout.trimEnd());
@@ -217,6 +425,20 @@ function writeResult(target, payload) {
 function writeOutput(target, text) {
   const output = outputTargets[target] || outputTargets[state.activeView] || outputTargets.dashboard;
   output.textContent = text;
+}
+
+function formatDelay(delay) {
+  if (!delay) return "--";
+  return `${Math.round(delay)} ms`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function updateMetrics(text) {

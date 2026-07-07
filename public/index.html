@@ -18,9 +18,11 @@
         </div>
         <nav class="nav" id="navTabs">
           <button class="nav-item active" data-view="dashboard" type="button">仪表盘</button>
+          <button class="nav-item" data-view="proxies" type="button">代理</button>
           <button class="nav-item" data-view="subscription" type="button">订阅</button>
+          <button class="nav-item" data-view="rules" type="button">规则</button>
           <button class="nav-item" data-view="service" type="button">服务</button>
-          <button class="nav-item" data-view="proxy" type="button">系统代理</button>
+          <button class="nav-item" data-view="proxy" type="button">系统</button>
           <button class="nav-item" data-view="logs" type="button">日志</button>
           <button class="nav-item" data-view="settings" type="button">设置</button>
         </nav>
@@ -74,6 +76,32 @@
           </section>
         </section>
 
+        <section class="view" id="proxies">
+          <div class="proxy-layout">
+            <section class="panel proxy-groups-panel">
+              <div class="panel-heading">
+                <h2>代理组</h2>
+                <button class="ghost-button" id="reloadProxiesBtn" type="button">刷新</button>
+              </div>
+              <div class="proxy-groups" id="proxyGroups">等待读取代理组...</div>
+            </section>
+
+            <section class="panel proxy-nodes-panel">
+              <div class="panel-heading">
+                <div>
+                  <h2 id="proxyGroupTitle">节点</h2>
+                  <p class="panel-subtitle" id="proxyGroupMeta">选择一个代理组查看节点</p>
+                </div>
+                <div class="inline-controls">
+                  <button class="ghost-button" id="delayGroupBtn" type="button">测试延迟</button>
+                  <button class="primary-button" data-action="select" type="button">自动选择</button>
+                </div>
+              </div>
+              <div class="node-grid" id="proxyNodes"></div>
+            </section>
+          </div>
+        </section>
+
         <section class="view" id="subscription">
           <div class="split-layout">
             <section class="panel">
@@ -109,6 +137,20 @@
               <pre class="terminal small" id="subscriptionOutput">订阅操作结果会显示在这里。</pre>
             </section>
           </div>
+        </section>
+
+        <section class="view" id="rules">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <h2>规则</h2>
+                <p class="panel-subtitle" id="rulesSummary">查看 Mihomo 当前加载的规则</p>
+              </div>
+              <button class="primary-button" id="loadRulesBtn" type="button">读取规则</button>
+            </div>
+            <div class="rule-stats" id="ruleStats"></div>
+            <div class="rule-list" id="ruleList">请选择读取规则。</div>
+          </section>
         </section>
 
         <section class="view" id="service">
