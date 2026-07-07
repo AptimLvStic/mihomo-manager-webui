@@ -1,0 +1,13 @@
+{
+  "name": "mihomo-manager-sh",
+  "version": "0.2.0",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

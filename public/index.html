@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mihomo Manager</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Main navigation">
+        <div class="brand">
+          <span class="brand-mark">M</span>
+          <div>
+            <strong>Mihomo Manager</strong>
+            <small id="serverLabel">Connecting...</small>
+          </div>
+        </div>
+        <nav class="nav" id="navTabs">
+          <button class="nav-item active" data-view="dashboard" type="button">仪表盘</button>
+          <button class="nav-item" data-view="subscription" type="button">订阅</button>
+          <button class="nav-item" data-view="service" type="button">服务</button>
+          <button class="nav-item" data-view="proxy" type="button">系统代理</button>
+          <button class="nav-item" data-view="logs" type="button">日志</button>
+          <button class="nav-item" data-view="settings" type="button">设置</button>
+        </nav>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Local Web Console</p>
+            <h1 id="viewTitle">仪表盘</h1>
+          </div>
+          <div class="topbar-actions">
+            <button class="ghost-button" id="refreshBtn" type="button">刷新状态</button>
+            <span class="status-pill" id="connectionPill">待连接</span>
+          </div>
+        </header>
+
+        <section class="view active" id="dashboard">
+          <div class="metric-grid">
+            <article class="metric">
+              <span>服务状态</span>
+              <strong id="serviceMetric">--</strong>
+            </article>
+            <article class="metric">
+              <span>订阅定时器</span>
+              <strong id="timerMetric">--</strong>
+            </article>
+            <article class="metric">
+              <span>系统代理</span>
+              <strong id="systemProxyMetric">--</strong>
+            </article>
+            <article class="metric">
+              <span>Proxychains</span>
+              <strong id="proxychainsMetric">--</strong>
+            </article>
+          </div>
+
+          <div class="action-band">
+            <button class="primary-button" data-action="update" type="button">更新订阅</button>
+            <button data-run="test" type="button">连通性测试</button>
+            <button data-action="restart" type="button">重启 Mihomo</button>
+            <button data-action="select" type="button">选择可用节点</button>
+          </div>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>状态总览</h2>
+              <button class="ghost-button" data-run="status" type="button">重新读取</button>
+            </div>
+            <pre class="terminal" id="statusOutput">等待读取状态...</pre>
+          </section>
+        </section>
+
+        <section class="view" id="subscription">
+          <div class="split-layout">
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>订阅管理</h2>
+                <button class="ghost-button" data-run="show-url" type="button">查看当前链接</button>
+              </div>
+              <form class="stack" id="urlForm">
+                <label>
+                  <span>新的订阅链接</span>
+                  <input id="subscriptionUrl" autocomplete="off" placeholder="https://..." type="url" />
+                </label>
+                <button class="primary-button" type="submit">保存并更新</button>
+              </form>
+              <form class="stack" id="uaForm">
+                <label>
+                  <span>User-Agent</span>
+                  <input id="subscriptionUa" autocomplete="off" placeholder="ClashMetaForAndroid/2.10.1" />
+                </label>
+                <button type="submit">保存 UA 并更新</button>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>订阅操作</h2>
+              </div>
+              <div class="button-list">
+                <button data-action="update" type="button">立即更新订阅</button>
+                <button data-action="select" type="button">自动选择可用节点</button>
+                <button data-run="show-url" type="button">显示脱敏链接</button>
+              </div>
+              <pre class="terminal small" id="subscriptionOutput">订阅操作结果会显示在这里。</pre>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="service">
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>服务控制</h2>
+              <button class="ghost-button" data-run="service-status" type="button">服务详情</button>
+            </div>
+            <div class="action-band">
+              <button class="primary-button" data-action="start" type="button">启动</button>
+              <button data-action="stop" type="button">停止</button>
+              <button data-action="restart" type="button">重启</button>
+              <button data-action="select" type="button">选择可用节点</button>
+              <button data-run="timer" type="button">查看定时器</button>
+              <button data-run="ports" type="button">监听端口</button>
+            </div>
+            <pre class="terminal" id="serviceOutput">服务操作结果会显示在这里。</pre>
+          </section>
+        </section>
+
+        <section class="view" id="proxy">
+          <div class="split-layout">
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>系统代理</h2>
+                <button class="ghost-button" data-run="proxy-status" type="button">查看状态</button>
+              </div>
+              <div class="button-list">
+                <button class="primary-button" data-action="proxy-on" type="button">开启系统代理</button>
+                <button data-action="proxy-off" type="button">关闭系统代理</button>
+                <button data-run="proxy-env" type="button">当前 shell 环境变量</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>Proxychains</h2>
+              </div>
+              <div class="button-list">
+                <button data-action="proxychains" type="button">重建配置</button>
+                <button data-run="proxychains-show" type="button">查看配置</button>
+                <button data-run="test" type="button">连通性测试</button>
+              </div>
+            </section>
+          </div>
+          <pre class="terminal" id="proxyOutput">系统代理和 Proxychains 输出会显示在这里。</pre>
+        </section>
+
+        <section class="view" id="logs">
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>日志查看</h2>
+              <div class="inline-controls">
+                <select id="logTarget">
+                  <option value="mihomo">Mihomo</option>
+                  <option value="subscription">订阅更新</option>
+                </select>
+                <select id="logLines">
+                  <option value="50">50 行</option>
+                  <option value="100" selected>100 行</option>
+                  <option value="200">200 行</option>
+                  <option value="500">500 行</option>
+                </select>
+                <button class="primary-button" id="loadLogsBtn" type="button">读取日志</button>
+              </div>
+            </div>
+            <pre class="terminal" id="logsOutput">请选择日志类型并读取。</pre>
+          </section>
+        </section>
+
+        <section class="view" id="settings">
+          <div class="split-layout">
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>语言</h2>
+              </div>
+              <div class="segmented">
+                <button data-lang="zh" type="button">中文</button>
+                <button data-lang="en" type="button">English</button>
+              </div>
+              <pre class="terminal small" id="settingsOutput">语言设置结果会显示在这里。</pre>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>连接信息</h2>
+              </div>
+              <dl class="details">
+                <div><dt>服务器</dt><dd id="configHost">--</dd></div>
+                <div><dt>用户</dt><dd id="configUser">--</dd></div>
+                <div><dt>脚本路径</dt><dd id="configScript">--</dd></div>
+              </dl>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
