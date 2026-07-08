@@ -33,6 +33,7 @@ textarea {
 }
 
 button {
+  position: relative;
   min-height: 40px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -55,6 +56,30 @@ button:active {
 button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+button.loading {
+  padding-left: 34px;
+}
+
+button.loading::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 input,
@@ -340,8 +365,17 @@ label span {
 
 .node-card {
   position: relative;
-  gap: 5px;
-  padding-right: 76px;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 14px;
+  padding-right: 86px;
+}
+
+.node-main {
+  display: grid;
+  gap: 4px;
 }
 
 .node-delay {
@@ -352,8 +386,18 @@ label span {
   font-size: 12px;
 }
 
-.node-delay.ok {
+.node-delay.fast {
   color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.node-delay.medium {
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.node-delay.slow {
+  color: var(--danger);
   font-weight: 700;
 }
 
@@ -362,8 +406,22 @@ label span {
   font-weight: 700;
 }
 
-.node-delay.fail {
-  color: var(--danger);
+.node-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.node-action {
+  flex: 1 1 0;
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.node-action.active-choice {
+  border-color: rgba(22, 124, 112, 0.22);
+  background: #eef8f5;
+  color: var(--accent-strong);
 }
 
 .status-list {
@@ -556,11 +614,63 @@ label span {
   pointer-events: none;
   transition: opacity 0.2s ease, transform 0.2s ease;
   z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
 }
 
 .toast.show {
   opacity: 1;
   transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+.toast.success {
+  border-color: rgba(22, 124, 112, 0.28);
+  background: #eef8f5;
+}
+
+.toast.error {
+  border-color: rgba(179, 55, 55, 0.28);
+  background: #fff3f0;
+}
+
+.toast-content {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.toast-content strong {
+  line-height: 1.35;
+}
+
+.toast details {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.toast summary {
+  cursor: pointer;
+}
+
+.toast pre {
+  max-height: 220px;
+  max-width: min(680px, calc(100vw - 96px));
+  overflow: auto;
+  margin: 8px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.toast-close {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
 }
 
 @media (max-width: 980px) {

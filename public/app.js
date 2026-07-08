@@ -5,6 +5,7 @@ const state = {
   selectedProxyGroup: "",
   proxyDelays: {},
   testingDelays: false,
+  testingDelayNodes: new Set(),
   proxyProgressText: "",
   subscriptionSettings: null,
 };
@@ -65,13 +66,13 @@ document.querySelector("#refreshBtn").addEventListener("click", () => refreshSta
 document.body.addEventListener("click", async (event) => {
   const runButton = event.target.closest("[data-run]");
   if (runButton) {
-    await runCommand(runButton.dataset.run);
+    await runCommand(runButton.dataset.run, runButton);
     return;
   }
 
   const actionButton = event.target.closest("[data-action]");
   if (actionButton) {
-    await runAction(actionButton.dataset.action);
+    await runAction(actionButton.dataset.action, actionButton);
     return;
   }
 
@@ -128,9 +129,15 @@ document.querySelector("#proxyGroups").addEventListener("click", (event) => {
 });
 
 document.querySelector("#proxyNodes").addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-proxy-select]");
-  if (!button) return;
-  await selectProxyNode(button.dataset.proxyGroup, button.dataset.proxySelect);
+  const delayButton = event.target.closest("[data-proxy-delay]");
+  if (delayButton) {
+    await testSingleNodeDelay(delayButton.dataset.proxyDelay);
+    return;
+  }
+
+  const selectButton = event.target.closest("[data-proxy-select]");
+  if (!selectButton) return;
+  await selectProxyNode(selectButton.dataset.proxyGroup, selectButton.dataset.proxySelect, selectButton);
 });
 
 await loadConfig();
@@ -155,8 +162,7 @@ function setView(view) {
 }
 
 async function loadConfig() {
-  const response = await fetch("/api/config");
-  const payload = await response.json();
+  const payload = await requestJson("/api/config", { timeoutMs: 8_000 });
   if (!payload.ok) {
     setConnection(false, payload.error || "连接配置读取失败");
     return;
@@ -171,8 +177,7 @@ async function loadConfig() {
 
 async function loadSubscriptionSettings() {
   try {
-    const response = await fetch("/api/subscription/settings");
-    const payload = await response.json();
+    const payload = await requestJson("/api/subscription/settings");
     if (!payload.ok) throw new Error(payload.error || payload.stderr || "订阅设置读取失败");
     state.subscriptionSettings = payload.data;
     document.querySelector("#subscriptionName").value = payload.data.name || "默认订阅";
@@ -231,17 +236,17 @@ async function refreshStatus() {
   setConnection(result.ok, result.ok ? "已连接" : "连接异常");
 }
 
-async function runCommand(command) {
+async function runCommand(command, button = null) {
   const target = commandTarget[command] || state.activeView;
-  const result = await fetchResult(`/api/run?command=${encodeURIComponent(command)}`, target);
+  const result = await fetchResult(`/api/run?command=${encodeURIComponent(command)}`, target, true, button);
   if (command === "status" && result) {
     updateMetrics(result.stdout || "");
   }
 }
 
-async function runAction(action) {
+async function runAction(action, button = null) {
   const target = actionTarget[action] || state.activeView;
-  const result = await postJson("/api/action", { action }, target);
+  const result = await postJson("/api/action", { action }, target, button);
   if (result?.ok) {
     await refreshStatus();
     if (action === "select" && state.activeView === "proxies") {
@@ -257,46 +262,150 @@ async function setLanguage(lang) {
   }
 }
 
-async function fetchResult(url, target, showToast = true) {
+async function requestJson(url, options = {}) {
+  const {
+    method = "GET",
+    body,
+    timeoutMs = 120_000,
+    retries = 0,
+  } = options;
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: body === undefined ? undefined : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) : {};
+      if (!response.ok && payload.ok !== false) {
+        payload.ok = false;
+        payload.error = `HTTP ${response.status}`;
+      }
+      return payload;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retries) break;
+      await sleep(400 * (attempt + 1));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchResult(url, target, showToast = true, button = null) {
   setBusy(true);
+  setButtonLoading(button, true);
   writeOutput(target, "正在执行...");
   try {
-    const response = await fetch(url);
-    const payload = await response.json();
+    const payload = await requestJson(url);
     writeResult(target, payload);
-    if (showToast) toast(payload.ok ? "操作完成" : "操作失败");
+    if (showToast) notifyPayload(payload);
     return payload;
   } catch (error) {
     const payload = { ok: false, error: error.message };
     writeResult(target, payload);
-    if (showToast) toast("请求失败");
+    if (showToast) toast("请求失败", "error", error.message);
     return payload;
   } finally {
+    setButtonLoading(button, false);
     setBusy(false);
   }
 }
 
-async function postJson(url, body, target) {
+async function postJson(url, body, target, button = null) {
   setBusy(true);
+  setButtonLoading(button, true);
   writeOutput(target, "正在执行...");
   try {
-    const response = await fetch(url, {
+    const payload = await requestJson(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body,
     });
-    const payload = await response.json();
     writeResult(target, payload);
-    toast(payload.ok ? "操作完成" : "操作失败");
+    notifyPayload(payload);
     return payload;
   } catch (error) {
     const payload = { ok: false, error: error.message };
     writeResult(target, payload);
-    toast("请求失败");
+    toast("请求失败", "error", error.message);
     return payload;
   } finally {
+    setButtonLoading(button, false);
     setBusy(false);
   }
+}
+
+function notifyPayload(payload) {
+  if (payload?.ok) {
+    toast("操作完成", "success");
+    return;
+  }
+  const friendly = friendlyError(payload);
+  toast(friendly.title, "error", friendly.detail);
+}
+
+function friendlyError(payload = {}) {
+  const detail = [payload.error, payload.stderr, payload.stdout]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+  const source = detail.toLowerCase();
+  if (/port\s+7890.*in use|address already in use|bind: address already in use/i.test(detail)) {
+    return {
+      title: "端口 7890 已被占用，请检查是否有其他代理服务正在运行。",
+      detail,
+    };
+  }
+  if (/yaml:|unmarshal|did not find expected|cannot unmarshal/i.test(detail)) {
+    return {
+      title: "配置文件格式错误，请检查 YAML 语法或刚新增的规则。",
+      detail,
+    };
+  }
+  if (/subscription url is not set|订阅链接未设置/i.test(detail)) {
+    return {
+      title: "订阅链接未设置，请先在订阅页保存订阅地址。",
+      detail,
+    };
+  }
+  if (/permission denied|publickey|authentication failed/i.test(detail)) {
+    return {
+      title: "SSH 认证失败，请检查服务器地址、用户、密码或私钥权限。",
+      detail,
+    };
+  }
+  if (/sshpass|spawn sshpass/i.test(detail)) {
+    return {
+      title: "当前环境缺少 sshpass，无法使用 SSH 密码模式。",
+      detail,
+    };
+  }
+  if (/controller unavailable|connection refused|127\.0\.0\.1:9090/i.test(source)) {
+    return {
+      title: "Mihomo 控制接口不可用，请确认服务已启动且 external-controller 为 127.0.0.1:9090。",
+      detail,
+    };
+  }
+  if (/no working proxy found/i.test(detail)) {
+    return {
+      title: "没有找到可用节点，请先更新订阅或手动测试节点延迟。",
+      detail,
+    };
+  }
+  return {
+    title: payload.error || "操作失败，请查看详情。",
+    detail,
+  };
 }
 
 async function loadProxies(force = false) {
@@ -308,8 +417,7 @@ async function loadProxies(force = false) {
   document.querySelector("#proxyGroups").textContent = "正在读取代理组...";
   document.querySelector("#proxyNodes").textContent = "";
   try {
-    const response = await fetch("/api/proxies");
-    const payload = await response.json();
+    const payload = await requestJson("/api/proxies");
     if (!payload.ok) throw new Error(payload.error || payload.stderr || "读取代理组失败");
     state.proxyData = payload.data;
     if (!state.selectedProxyGroup) {
@@ -323,7 +431,7 @@ async function loadProxies(force = false) {
     toast("代理组已刷新");
   } catch (error) {
     document.querySelector("#proxyGroups").textContent = error.message;
-    toast("读取代理组失败");
+    toast("读取代理组失败", "error", error.message);
   } finally {
     setBusy(false);
   }
@@ -369,39 +477,47 @@ function renderProxies() {
   for (const option of group?.options || []) {
     const node = state.proxyData.nodes[option] || { name: option, type: "Group" };
     const hasMeasuredDelay = Object.prototype.hasOwnProperty.call(state.proxyDelays, option);
-    const delay = hasMeasuredDelay ? state.proxyDelays[option] : node.delay;
+    const delay = state.testingDelayNodes.has(option)
+      ? "testing"
+      : hasMeasuredDelay ? state.proxyDelays[option] : node.delay;
     const active = option === group.now;
-    const delayState = delay === "testing" ? "pending" : delay ? "ok" : hasMeasuredDelay ? "fail" : "";
-    const card = document.createElement("button");
+    const delayState = delayClass(delay, hasMeasuredDelay);
+    const testingNode = state.testingDelayNodes.has(option);
+    const delayDisabled = state.busy || state.testingDelays || testingNode ? " disabled" : "";
+    const selectDisabled = state.busy ? " disabled" : "";
+    const card = document.createElement("article");
     card.className = `node-card${active ? " active" : ""}`;
-    card.type = "button";
-    card.dataset.proxyGroup = group.name;
-    card.dataset.proxySelect = option;
     card.innerHTML = `
-      <span class="node-title">${escapeHtml(option)}</span>
-      <span class="node-meta">${escapeHtml(node.type || "Node")}</span>
+      <div class="node-main">
+        <span class="node-title">${escapeHtml(option)}</span>
+        <span class="node-meta">${escapeHtml(node.type || "Node")}${active ? " · 当前" : ""}</span>
+      </div>
       <span class="node-delay ${delayState}">${formatDelay(delay)}</span>
+      <div class="node-actions">
+        <button class="ghost-button node-action${testingNode ? " loading" : ""}" data-proxy-delay="${escapeAttribute(option)}" type="button"${delayDisabled}>测速</button>
+        <button class="node-action${active ? " active-choice" : ""}" data-proxy-group="${escapeAttribute(group.name)}" data-proxy-select="${escapeAttribute(option)}" type="button"${selectDisabled}>${active ? "已选" : "选择"}</button>
+      </div>
     `;
     nodesContainer.appendChild(card);
   }
   document.querySelector("#delayGroupBtn").disabled = state.busy || state.testingDelays;
 }
 
-async function selectProxyNode(group, name) {
+async function selectProxyNode(group, name, button = null) {
   setBusy(true);
+  setButtonLoading(button, true);
   try {
-    const response = await fetch("/api/proxies/select", {
+    const payload = await requestJson("/api/proxies/select", {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ group, name }),
+      body: { group, name },
     });
-    const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error || payload.stderr || "切换节点失败");
-    toast(`已切换：${name}`);
+    toast(`已切换：${name}`, "success");
     await loadProxies(true);
   } catch (error) {
-    toast(error.message);
+    toast("切换节点失败", "error", error.message);
   } finally {
+    setButtonLoading(button, false);
     setBusy(false);
   }
 }
@@ -423,10 +539,11 @@ async function testSelectedGroupDelays() {
   renderProxies();
   try {
     for (const name of names) {
-      state.proxyDelays[name] = "testing";
+      state.testingDelayNodes.add(name);
       state.proxyProgressText = `正在测试 ${doneCount + 1}/${names.length}：${name}`;
       renderProxies();
       const delay = await testProxyDelay(name);
+      state.testingDelayNodes.delete(name);
       state.proxyDelays[name] = delay;
       if (delay) okCount += 1;
       doneCount += 1;
@@ -435,21 +552,38 @@ async function testSelectedGroupDelays() {
     }
     toast(`测速完成：${okCount}/${names.length} 可用`);
   } catch (error) {
-    toast(error.message);
+    toast("测速失败", "error", error.message);
   } finally {
     state.testingDelays = false;
+    state.testingDelayNodes.clear();
     state.proxyProgressText = "";
     renderProxies();
   }
 }
 
+async function testSingleNodeDelay(name) {
+  if (!name || state.testingDelayNodes.has(name)) return;
+  state.testingDelayNodes.add(name);
+  renderProxies();
+  try {
+    const delay = await testProxyDelay(name);
+    state.proxyDelays[name] = delay;
+    toast(delay ? `${name}：${formatDelay(delay)}` : `${name}：超时`, delay ? "success" : "error");
+  } catch (error) {
+    state.proxyDelays[name] = null;
+    toast("测速失败", "error", error.message);
+  } finally {
+    state.testingDelayNodes.delete(name);
+    renderProxies();
+  }
+}
+
 async function testProxyDelay(name) {
-  const response = await fetch("/api/proxies/delays", {
+  const payload = await requestJson("/api/proxies/delays", {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ names: [name] }),
+    body: { names: [name] },
+    timeoutMs: 15_000,
   });
-  const payload = await response.json();
   if (!payload.ok) throw new Error(payload.error || payload.stderr || "测速失败");
   return payload.data.delays[name] || null;
 }
@@ -460,14 +594,13 @@ async function loadRules() {
   document.querySelector("#ruleStats").innerHTML = "";
   document.querySelector("#ruleList").textContent = "";
   try {
-    const response = await fetch("/api/rules");
-    const payload = await response.json();
+    const payload = await requestJson("/api/rules");
     if (!payload.ok) throw new Error(payload.error || payload.stderr || "读取规则失败");
     renderRules(payload.data);
     toast("规则已读取");
   } catch (error) {
     document.querySelector("#rulesSummary").textContent = error.message;
-    toast("读取规则失败");
+    toast("读取规则失败", "error", error.message);
   } finally {
     setBusy(false);
   }
@@ -502,8 +635,7 @@ function renderRules(data) {
 async function loadRulePolicies() {
   if (!state.proxyData) {
     try {
-      const response = await fetch("/api/proxies");
-      const payload = await response.json();
+      const payload = await requestJson("/api/proxies");
       if (payload.ok) {
         state.proxyData = payload.data;
       }
@@ -609,6 +741,15 @@ function formatDelay(delay) {
   return `${Math.round(delay)} ms`;
 }
 
+function delayClass(delay, hasMeasuredDelay = false) {
+  if (delay === "testing") return "pending";
+  if (delay === null && hasMeasuredDelay) return "slow";
+  if (!delay) return "";
+  if (delay < 50) return "fast";
+  if (delay < 200) return "medium";
+  return "slow";
+}
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -616,6 +757,10 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value).replace(/`/g, "&#096;");
 }
 
 function updateMetrics(text) {
@@ -662,11 +807,43 @@ function setBusy(busy) {
   });
 }
 
+function setButtonLoading(button, loading) {
+  if (!button) return;
+  button.classList.toggle("loading", loading);
+}
+
 let toastTimer;
-function toast(message) {
+function toast(message, type = "info", detail = "") {
   const element = document.querySelector("#toast");
-  element.textContent = message;
+  element.className = `toast ${type}`;
+  element.innerHTML = "";
+
+  const content = document.createElement("div");
+  content.className = "toast-content";
+  const title = document.createElement("strong");
+  title.textContent = message;
+  content.appendChild(title);
+
+  if (detail) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "查看详情";
+    const pre = document.createElement("pre");
+    pre.textContent = detail;
+    details.appendChild(summary);
+    details.appendChild(pre);
+    content.appendChild(details);
+  }
+
+  const close = document.createElement("button");
+  close.className = "toast-close";
+  close.type = "button";
+  close.textContent = "关闭";
+  close.addEventListener("click", () => element.classList.remove("show"), { once: true });
+
+  element.appendChild(content);
+  element.appendChild(close);
   element.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => element.classList.remove("show"), 2600);
+  toastTimer = setTimeout(() => element.classList.remove("show"), detail ? 9000 : 2600);
 }

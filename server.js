@@ -142,7 +142,7 @@ async function handleApi(req, res) {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/proxies") {
+  if (req.method === "GET" && (url.pathname === "/api/proxies" || url.pathname === "/api/groups")) {
     const result = await runRemoteScript(proxiesScript(), 60_000);
     sendJsonResult(res, result);
     return;

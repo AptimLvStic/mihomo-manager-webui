@@ -112,7 +112,7 @@ MIHOMO_MODE=local npm start
 MIHOMO_MODE=remote MIHOMO_AUTH=key MIHOMO_HOST=1.2.3.4 MIHOMO_USER=root MIHOMO_KEY=/path/to/key npm start
 
 # 远端密码管理
-MIHOMO_MODE=remote MIHOMO_AUTH=password MIHOMO_HOST=1.2.3.4 MIHOMO_USER=root MIHOMO_PASSWORD='your-password' npm start
+MIHOMO_MODE=remote MIHOMO_AUTH=password MIHOMO_HOST=1.2.3.4 MIHOMO_USER=root MIHOMO_PASSWORD='<ssh-password>' npm start
 ```
 
 ### 本地 Web UI 部署
@@ -235,6 +235,14 @@ WebUI 当前包含以下页面：
 - 日志：查看 Mihomo 日志和订阅更新日志
 - 设置：切换输出语言，查看连接信息
 
+### 优化整改文档
+
+P0-P3 整改设计、UI 原型、技术方案、路线图和测试清单见：
+
+```text
+docs/optimization-plan.md
+```
+
 ### 敏感信息
 
 不要提交订阅链接或 token。WebUI 会把订阅配置保存在服务器的 `/etc/mihomo/subscription.env`，显示订阅链接时会自动脱敏敏感查询参数。
@@ -351,7 +359,7 @@ MIHOMO_MODE=local npm start
 MIHOMO_MODE=remote MIHOMO_AUTH=key MIHOMO_HOST=1.2.3.4 MIHOMO_USER=root MIHOMO_KEY=/path/to/key npm start
 
 # Remote password management
-MIHOMO_MODE=remote MIHOMO_AUTH=password MIHOMO_HOST=1.2.3.4 MIHOMO_USER=root MIHOMO_PASSWORD='your-password' npm start
+MIHOMO_MODE=remote MIHOMO_AUTH=password MIHOMO_HOST=1.2.3.4 MIHOMO_USER=root MIHOMO_PASSWORD='<ssh-password>' npm start
 ```
 
 ### Local Web UI Deployment
@@ -473,6 +481,14 @@ The WebUI currently includes these pages:
 - System: enable/disable system proxy, view and recreate proxychains config
 - Logs: view Mihomo logs and subscription update logs
 - Settings: switch output language and view connection details
+
+### Optimization Plan
+
+The P0-P3 optimization design, UI prototypes, technical plan, roadmap, and test checklist are available at:
+
+```text
+docs/optimization-plan.md
+```
 
 ### Sensitive Data
 
