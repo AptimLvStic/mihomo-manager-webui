@@ -773,25 +773,31 @@ async function testSelectedGroupDelays() {
     return;
   }
   state.testingDelays = true;
+  state.testingDelayNodes = new Set(names);
+  state.proxyProgressText = `正在测试 0/${names.length}，等待节点返回...`;
   let okCount = 0;
   let doneCount = 0;
+  let errorCount = 0;
   renderProxies();
   try {
     for (const name of names) {
-      state.testingDelayNodes.add(name);
       state.proxyProgressText = `正在测试 ${doneCount + 1}/${names.length}：${name}`;
       renderProxies();
-      const delay = await testProxyDelay(name);
+      let delay = null;
+      try {
+        delay = await testProxyDelay(name);
+      } catch {
+        errorCount += 1;
+      }
       state.testingDelayNodes.delete(name);
-      state.proxyDelays[name] = delay;
+      state.proxyDelays[name] = delay || null;
       if (delay) okCount += 1;
       doneCount += 1;
       state.proxyProgressText = `已测试 ${doneCount}/${names.length}，可用 ${okCount}`;
       renderProxies();
     }
-    toast(`测速完成：${okCount}/${names.length} 可用`);
-  } catch (error) {
-    toast("测速失败", "error", error.message);
+    const suffix = errorCount ? `，异常 ${errorCount}` : "";
+    toast(`测速完成：${okCount}/${names.length} 可用${suffix}`);
   } finally {
     state.testingDelays = false;
     state.testingDelayNodes.clear();
