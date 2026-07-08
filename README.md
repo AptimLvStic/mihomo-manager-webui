@@ -144,26 +144,64 @@ http://127.0.0.1:5178
 
 ### Docker 部署
 
-构建镜像：
+#### 方式一：docker run
+
+生产环境建议只绑定本机地址，并通过 Nginx/Caddy 等反向代理提供 HTTPS 访问。若容器需要管理宿主机上的 Mihomo，不要把 `MIHOMO_HOST` 写成 `127.0.0.1`，容器内的 `127.0.0.1` 指向容器自身，应使用 `host.docker.internal` 并添加 host-gateway 映射。
+
+首次初始化模式可以只挂载持久化目录后启动，随后在浏览器初始化界面选择“本地管理”或“远端管理”：
 
 ```bash
-docker build -t mihomo-manager-webui .
-```
+mkdir -p data
 
-运行容器：
-
-```bash
 docker run -d \
   --name mihomo-manager-webui \
   --restart unless-stopped \
+  --init \
   -p 127.0.0.1:5178:5178 \
+  --add-host=host.docker.internal:host-gateway \
+  -e LISTEN_HOST=0.0.0.0 \
+  -e SERVER_CONFIG_FILE=/app/data/server.config.json \
+  -v "$(pwd)/data:/app/data" \
+  --read-only \
+  --tmpfs /tmp:size=16m,mode=1777 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  mihomo-manager-webui
+```
+
+如果明确采用“远端密钥模式”管理宿主机或另一台服务器，可以预先注入环境变量和密钥：
+
+```bash
+mkdir -p data secrets
+# 示例：为宿主机管理生成项目专用密钥，并把公钥加入被管理服务器的 authorized_keys
+ssh-keygen -t ed25519 -N "" -f secrets/mihomo_manager_ed25519 -C mihomo-manager-webui
+cat secrets/mihomo_manager_ed25519.pub >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys secrets/mihomo_manager_ed25519
+
+docker run -d \
+  --name mihomo-manager-webui \
+  --restart unless-stopped \
+  --init \
+  -p 127.0.0.1:5178:5178 \
+  --add-host=host.docker.internal:host-gateway \
+  -e LISTEN_HOST=0.0.0.0 \
+  -e SERVER_CONFIG_FILE=/app/data/server.config.json \
   -e MIHOMO_MODE=remote \
   -e MIHOMO_AUTH=key \
-  -e MIHOMO_HOST=1.2.3.4 \
+  -e MIHOMO_HOST=host.docker.internal \
   -e MIHOMO_SSH_PORT=22 \
   -e MIHOMO_USER=root \
   -e MIHOMO_KEY_FILE=/run/secrets/mihomo_ssh_key \
-  -v /absolute/path/to/private_key:/run/secrets/mihomo_ssh_key:ro \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/secrets/mihomo_manager_ed25519:/run/secrets/mihomo_ssh_key:ro" \
+  --read-only \
+  --tmpfs /tmp:size=16m,mode=1777 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   mihomo-manager-webui
 ```
 
@@ -173,59 +211,71 @@ docker run -d \
 http://127.0.0.1:5178
 ```
 
-容器内部监听 `0.0.0.0`，但上面的示例只把服务发布到宿主机的 `127.0.0.1`。入口脚本会在密钥模式下把挂载的私钥复制到临时文件并设置为 `600` 权限，避免 OpenSSH 因权限过宽而拒绝使用私钥。
-
 停止并删除容器：
 
 ```bash
 docker rm -f mihomo-manager-webui
 ```
 
-### Docker Compose 部署
+#### 方式二：Docker Compose
 
 创建环境变量文件：
 
 ```bash
 cp .env.example .env
+mkdir -p data secrets
 ```
 
-编辑 `.env`：
-
-```bash
-MIHOMO_HOST=1.2.3.4
-MIHOMO_MODE=remote
-MIHOMO_AUTH=key
-MIHOMO_SSH_PORT=22
-MIHOMO_USER=root
-MIHOMO_KEY_PATH=/absolute/path/to/private_key
-MIHOMO_PASSWORD=
-```
-
-启动：
+若使用初始化界面完成配置，可以保持 `.env` 中 `MIHOMO_MODE`、`MIHOMO_AUTH`、`MIHOMO_HOST` 等为空，然后启动：
 
 ```bash
 docker compose up -d --build
 ```
 
-打开：
-
-```text
-http://127.0.0.1:5178
-```
-
-查看日志：
+若使用远端密钥模式管理宿主机，建议创建项目专用密钥并填写 `.env`：
 
 ```bash
-docker compose logs -f
+ssh-keygen -t ed25519 -N "" -f secrets/mihomo_manager_ed25519 -C mihomo-manager-webui
+cat secrets/mihomo_manager_ed25519.pub >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys secrets/mihomo_manager_ed25519
 ```
 
-停止：
+```env
+MIHOMO_BIND=127.0.0.1
+MIHOMO_MODE=remote
+MIHOMO_AUTH=key
+MIHOMO_HOST=host.docker.internal
+MIHOMO_SSH_PORT=22
+MIHOMO_USER=root
+MIHOMO_KEY_PATH=/absolute/path/to/mihomo-manager-webui/secrets/mihomo_manager_ed25519
+MIHOMO_PASSWORD=
+```
+
+启动远端密钥模式：
 
 ```bash
-docker compose down
+docker compose -f docker-compose.yml -f docker-compose.remote-key.yml up -d --build
 ```
 
-Compose 文件同样将 Web UI 绑定到 `127.0.0.1:5178`。远端密钥模式使用 `MIHOMO_KEY_PATH` 挂载私钥；远端密码模式设置 `MIHOMO_AUTH=password` 和 `MIHOMO_PASSWORD`；本地管理模式设置 `MIHOMO_MODE=local`。请妥善保管 `.env`，因为其中可能包含服务器地址、私钥路径或 SSH 密码。
+远端密码模式不需要密钥 override，设置 `MIHOMO_AUTH=password` 和 `MIHOMO_PASSWORD` 后使用基础 Compose 文件启动即可。本地管理模式设置 `MIHOMO_MODE=local`，但在 Docker 内的本地模式只管理容器自身环境；如果要管理宿主机服务，推荐使用上面的远端 SSH 方式。
+
+上线检查：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.remote-key.yml ps
+curl -fsS http://127.0.0.1:5178/api/config
+curl -fsS "http://127.0.0.1:5178/api/run?command=status"
+ss -ltnp | grep 5178
+```
+
+查看日志和停止服务：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.remote-key.yml logs -f
+docker compose -f docker-compose.yml -f docker-compose.remote-key.yml down
+```
+
+Compose 默认将 WebUI 绑定到 `127.0.0.1:5178`，配置文件持久化到 `./data`，密钥建议放在 `./secrets`。`.env`、`data/`、`secrets/` 都不应提交到 Git。
 
 ### 可视化操作
 
@@ -396,26 +446,64 @@ By default, the web server only listens on `127.0.0.1`. The backend exposes only
 
 ### Docker Deployment
 
-Build the image:
+#### Option 1: docker run
+
+For production, bind the UI to localhost and expose it through a reverse proxy such as Nginx or Caddy with HTTPS. If the container manages Mihomo on the Docker host, do not set `MIHOMO_HOST` to `127.0.0.1`; inside a container that points to the container itself. Use `host.docker.internal` with the host-gateway mapping instead.
+
+For first-run setup, you can start with only the persistent data directory mounted, then choose local or remote mode in the browser setup screen:
 
 ```bash
-docker build -t mihomo-manager-webui .
-```
+mkdir -p data
 
-Run the container:
-
-```bash
 docker run -d \
   --name mihomo-manager-webui \
   --restart unless-stopped \
+  --init \
   -p 127.0.0.1:5178:5178 \
+  --add-host=host.docker.internal:host-gateway \
+  -e LISTEN_HOST=0.0.0.0 \
+  -e SERVER_CONFIG_FILE=/app/data/server.config.json \
+  -v "$(pwd)/data:/app/data" \
+  --read-only \
+  --tmpfs /tmp:size=16m,mode=1777 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  mihomo-manager-webui
+```
+
+If you already know you want remote key mode for the Docker host or another server, inject the environment and key explicitly:
+
+```bash
+mkdir -p data secrets
+# Example: create a project-specific key for host management and authorize it on the managed server.
+ssh-keygen -t ed25519 -N "" -f secrets/mihomo_manager_ed25519 -C mihomo-manager-webui
+cat secrets/mihomo_manager_ed25519.pub >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys secrets/mihomo_manager_ed25519
+
+docker run -d \
+  --name mihomo-manager-webui \
+  --restart unless-stopped \
+  --init \
+  -p 127.0.0.1:5178:5178 \
+  --add-host=host.docker.internal:host-gateway \
+  -e LISTEN_HOST=0.0.0.0 \
+  -e SERVER_CONFIG_FILE=/app/data/server.config.json \
   -e MIHOMO_MODE=remote \
   -e MIHOMO_AUTH=key \
-  -e MIHOMO_HOST=1.2.3.4 \
+  -e MIHOMO_HOST=host.docker.internal \
   -e MIHOMO_SSH_PORT=22 \
   -e MIHOMO_USER=root \
   -e MIHOMO_KEY_FILE=/run/secrets/mihomo_ssh_key \
-  -v /absolute/path/to/private_key:/run/secrets/mihomo_ssh_key:ro \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/secrets/mihomo_manager_ed25519:/run/secrets/mihomo_ssh_key:ro" \
+  --read-only \
+  --tmpfs /tmp:size=16m,mode=1777 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   mihomo-manager-webui
 ```
 
@@ -425,59 +513,71 @@ Open:
 http://127.0.0.1:5178
 ```
 
-The container listens on `0.0.0.0` internally, but the example publishes it only to `127.0.0.1` on the host. In key mode, the entrypoint copies the mounted private key to a temporary file with `600` permissions before starting Node, which avoids common OpenSSH permission errors.
-
 Stop and remove:
 
 ```bash
 docker rm -f mihomo-manager-webui
 ```
 
-### Docker Compose Deployment
+#### Option 2: Docker Compose
 
-Create an environment file:
+Create the environment file:
 
 ```bash
 cp .env.example .env
+mkdir -p data secrets
 ```
 
-Edit `.env`:
-
-```bash
-MIHOMO_HOST=1.2.3.4
-MIHOMO_MODE=remote
-MIHOMO_AUTH=key
-MIHOMO_SSH_PORT=22
-MIHOMO_USER=root
-MIHOMO_KEY_PATH=/absolute/path/to/private_key
-MIHOMO_PASSWORD=
-```
-
-Start:
+To use the browser setup wizard, keep `MIHOMO_MODE`, `MIHOMO_AUTH`, `MIHOMO_HOST`, and related fields empty in `.env`, then start:
 
 ```bash
 docker compose up -d --build
 ```
 
-Open:
-
-```text
-http://127.0.0.1:5178
-```
-
-View logs:
+For remote key mode managing the Docker host, create a project-specific key and fill `.env`:
 
 ```bash
-docker compose logs -f
+ssh-keygen -t ed25519 -N "" -f secrets/mihomo_manager_ed25519 -C mihomo-manager-webui
+cat secrets/mihomo_manager_ed25519.pub >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys secrets/mihomo_manager_ed25519
 ```
 
-Stop:
+```env
+MIHOMO_BIND=127.0.0.1
+MIHOMO_MODE=remote
+MIHOMO_AUTH=key
+MIHOMO_HOST=host.docker.internal
+MIHOMO_SSH_PORT=22
+MIHOMO_USER=root
+MIHOMO_KEY_PATH=/absolute/path/to/mihomo-manager-webui/secrets/mihomo_manager_ed25519
+MIHOMO_PASSWORD=
+```
+
+Start remote key mode:
 
 ```bash
-docker compose down
+docker compose -f docker-compose.yml -f docker-compose.remote-key.yml up -d --build
 ```
 
-The Compose file also binds the UI to `127.0.0.1:5178`. Remote key mode uses `MIHOMO_KEY_PATH` to mount the private key; remote password mode uses `MIHOMO_AUTH=password` and `MIHOMO_PASSWORD`; local management mode uses `MIHOMO_MODE=local`. Keep `.env` private because it may contain server details, key paths, or an SSH password.
+Remote password mode does not need the key override; set `MIHOMO_AUTH=password` and `MIHOMO_PASSWORD`, then use the base Compose file. Local mode uses `MIHOMO_MODE=local`, but local mode inside Docker only manages the container runtime. To manage host services, prefer the remote SSH mode above.
+
+Production checks:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.remote-key.yml ps
+curl -fsS http://127.0.0.1:5178/api/config
+curl -fsS "http://127.0.0.1:5178/api/run?command=status"
+ss -ltnp | grep 5178
+```
+
+View logs and stop:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.remote-key.yml logs -f
+docker compose -f docker-compose.yml -f docker-compose.remote-key.yml down
+```
+
+Compose binds the WebUI to `127.0.0.1:5178` by default, persists config under `./data`, and expects private keys under `./secrets`. Do not commit `.env`, `data/`, or `secrets/` to Git.
 
 ### Visual Operations
 

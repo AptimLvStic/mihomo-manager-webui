@@ -1,11 +1,11 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { extname, join, normalize, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, extname, join, normalize, resolve } from "node:path";
 
 const rootDir = resolve(".");
 const publicDir = join(rootDir, "public");
-const configFile = join(rootDir, "server.config.json");
+const configFile = process.env.SERVER_CONFIG_FILE ? resolve(process.env.SERVER_CONFIG_FILE) : join(rootDir, "server.config.json");
 const port = Number(process.env.PORT || 5178);
 const listenHost = process.env.LISTEN_HOST || "127.0.0.1";
 let config = loadConfig();
@@ -64,7 +64,7 @@ function loadConfig() {
   const fileConfig = hasFileConfig
     ? JSON.parse(readFileSync(configFile, "utf8"))
     : {};
-  const hasEnvConfig = Boolean(process.env.MIHOMO_MODE || process.env.MIHOMO_HOST || process.env.MIHOMO_KEY || process.env.MIHOMO_PASSWORD);
+  const hasEnvConfig = Boolean(process.env.MIHOMO_MODE || process.env.MIHOMO_HOST || process.env.MIHOMO_KEY || process.env.MIHOMO_KEY_FILE || process.env.MIHOMO_PASSWORD);
   if (!hasFileConfig && !hasEnvConfig) {
     return {
       configured: false,
@@ -93,7 +93,7 @@ function loadConfig() {
       auth: "none",
     };
   }
-  const identityFile = process.env.MIHOMO_KEY || fileConfig.identityFile || "";
+  const identityFile = process.env.MIHOMO_KEY || process.env.MIHOMO_KEY_FILE || fileConfig.identityFile || "";
   const password = process.env.MIHOMO_PASSWORD || fileConfig.password || "";
   const auth = String(
     process.env.MIHOMO_AUTH || fileConfig.auth || (password && !identityFile ? "password" : "key"),
@@ -116,7 +116,7 @@ function loadConfig() {
     throw new Error("Missing server host. Create server.config.json or set MIHOMO_HOST.");
   }
   if (merged.auth === "key" && !merged.identityFile) {
-    throw new Error("Missing SSH identity file. Create server.config.json or set MIHOMO_KEY.");
+    throw new Error("Missing SSH identity file. Create server.config.json or set MIHOMO_KEY/MIHOMO_KEY_FILE.");
   }
   if (merged.auth === "password" && !merged.password) {
     throw new Error("Missing SSH password. Set MIHOMO_PASSWORD or configure password in server.config.json.");
@@ -227,6 +227,7 @@ async function handleApi(req, res) {
       sendJson(res, 500, result);
       return;
     }
+    mkdirSync(dirname(configFile), { recursive: true });
     writeFileSync(configFile, `${JSON.stringify(configForStorage(nextConfig), null, 2)}\n`, { mode: 0o600 });
     config = loadConfig();
     sendJson(res, 200, {
@@ -1391,7 +1392,8 @@ function runRemoteScript(script, timeoutMs = 90_000, targetConfig = config) {
     return runScriptProcess("bash", ["-s"], script, timeoutMs);
   }
 
-  const sshArgs = ["-p", String(targetConfig.port), "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new"];
+  const knownHostsFile = process.env.SSH_KNOWN_HOSTS_FILE || "/tmp/mihomo_manager_known_hosts";
+  const sshArgs = ["-p", String(targetConfig.port), "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + knownHostsFile];
   let command = "ssh";
   let args = sshArgs;
   let env = process.env;
