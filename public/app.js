@@ -34,6 +34,14 @@ const outputTargets = {
   settings: document.querySelector("#settingsOutput"),
 };
 
+const inboundFieldMap = {
+  http: { enabled: "#inboundHttpEnabled", port: "#inboundHttpPort", label: "HTTP" },
+  socks: { enabled: "#inboundSocksEnabled", port: "#inboundSocksPort", label: "SOCKS5" },
+  mixed: { enabled: "#inboundMixedEnabled", port: "#inboundMixedPort", label: "Mixed" },
+  redir: { enabled: "#inboundRedirEnabled", port: "#inboundRedirPort", label: "Redir" },
+  tproxy: { enabled: "#inboundTproxyEnabled", port: "#inboundTproxyPort", label: "TProxy" },
+};
+
 const commandTarget = {
   status: "dashboard",
   test: "dashboard",
@@ -363,14 +371,6 @@ function writeSubscriptionSummary(data) {
   ];
   output.textContent = rows.map(([label, value]) => `${label}：${value}`).join("\n");
 }
-
-const inboundFieldMap = {
-  http: { enabled: "#inboundHttpEnabled", port: "#inboundHttpPort", label: "HTTP" },
-  socks: { enabled: "#inboundSocksEnabled", port: "#inboundSocksPort", label: "SOCKS5" },
-  mixed: { enabled: "#inboundMixedEnabled", port: "#inboundMixedPort", label: "Mixed" },
-  redir: { enabled: "#inboundRedirEnabled", port: "#inboundRedirPort", label: "Redir" },
-  tproxy: { enabled: "#inboundTproxyEnabled", port: "#inboundTproxyPort", label: "TProxy" },
-};
 
 async function loadCoreProxySettings(force = false, button = null) {
   if (state.mihomoProxySettings && !force) {
@@ -1007,7 +1007,7 @@ function updateMetrics(text) {
   const timer = extractLine(text, ["订阅定时更新：", "Subscription timer: "]);
   const shellProxy = extractLine(text, ["系统 shell 代理：", "System shell proxy: "]);
   const aptProxy = extractLine(text, ["APT 代理：", "APT proxy: "]);
-  const hasCoreListener = /LISTEN\s+.*(?:mihomo|:9090)/i.test(text);
+  const hasCoreListener = /LISTEN\s+.*(?:mihomo|:9090\b)/i.test(text);
 
   document.querySelector("#serviceMetric").textContent = compact(service);
   document.querySelector("#timerMetric").textContent = compact(timer);
@@ -1040,6 +1040,7 @@ function setConnection(ok, label) {
 function setBusy(busy) {
   state.busy = busy;
   document.querySelectorAll("button, input, select, textarea").forEach((element) => {
+    if (element.classList.contains("nav-item")) return;
     element.disabled = busy;
   });
   if (document.querySelector("#coreProxyForm")) {
