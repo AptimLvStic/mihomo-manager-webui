@@ -146,7 +146,7 @@ http://127.0.0.1:5178
 
 #### 方式一：docker run
 
-生产环境建议只绑定本机地址，并通过 Nginx/Caddy 等反向代理提供 HTTPS 访问。若容器需要管理宿主机上的 Mihomo，不要把 `MIHOMO_HOST` 写成 `127.0.0.1`，容器内的 `127.0.0.1` 指向容器自身，应使用 `host.docker.internal` 并添加 host-gateway 映射。
+当前 Docker 示例默认绑定 `0.0.0.0:5178`，会对外开放 WebUI；生产环境请至少配合防火墙白名单，推荐再通过 Nginx/Caddy 等反向代理提供 HTTPS 访问。若容器需要管理宿主机上的 Mihomo，不要把 `MIHOMO_HOST` 写成 `127.0.0.1`，容器内的 `127.0.0.1` 指向容器自身，应使用 `host.docker.internal` 并添加 host-gateway 映射。
 
 首次初始化模式可以只挂载持久化目录后启动，随后在浏览器初始化界面选择“本地管理”或“远端管理”：
 
@@ -157,7 +157,7 @@ docker run -d \
   --name mihomo-manager-webui \
   --restart unless-stopped \
   --init \
-  -p 127.0.0.1:5178:5178 \
+  -p 0.0.0.0:5178:5178 \
   --add-host=host.docker.internal:host-gateway \
   -e LISTEN_HOST=0.0.0.0 \
   -e SERVER_CONFIG_FILE=/app/data/server.config.json \
@@ -184,7 +184,7 @@ docker run -d \
   --name mihomo-manager-webui \
   --restart unless-stopped \
   --init \
-  -p 127.0.0.1:5178:5178 \
+  -p 0.0.0.0:5178:5178 \
   --add-host=host.docker.internal:host-gateway \
   -e LISTEN_HOST=0.0.0.0 \
   -e SERVER_CONFIG_FILE=/app/data/server.config.json \
@@ -208,7 +208,7 @@ docker run -d \
 打开：
 
 ```text
-http://127.0.0.1:5178
+http://SERVER_IP:5178
 ```
 
 停止并删除容器：
@@ -241,7 +241,7 @@ chmod 600 /root/.ssh/authorized_keys secrets/mihomo_manager_ed25519
 ```
 
 ```env
-MIHOMO_BIND=127.0.0.1
+MIHOMO_BIND=0.0.0.0
 MIHOMO_MODE=remote
 MIHOMO_AUTH=key
 MIHOMO_HOST=host.docker.internal
@@ -275,7 +275,7 @@ docker compose -f docker-compose.yml -f docker-compose.remote-key.yml logs -f
 docker compose -f docker-compose.yml -f docker-compose.remote-key.yml down
 ```
 
-Compose 默认将 WebUI 绑定到 `127.0.0.1:5178`，配置文件持久化到 `./data`，密钥建议放在 `./secrets`。`.env`、`data/`、`secrets/` 都不应提交到 Git。
+Compose 默认将 WebUI 绑定到 `0.0.0.0:5178`，配置文件持久化到 `./data`，密钥建议放在 `./secrets`。`.env`、`data/`、`secrets/` 都不应提交到 Git。
 
 ### 可视化操作
 
@@ -448,7 +448,7 @@ By default, the web server only listens on `127.0.0.1`. The backend exposes only
 
 #### Option 1: docker run
 
-For production, bind the UI to localhost and expose it through a reverse proxy such as Nginx or Caddy with HTTPS. If the container manages Mihomo on the Docker host, do not set `MIHOMO_HOST` to `127.0.0.1`; inside a container that points to the container itself. Use `host.docker.internal` with the host-gateway mapping instead.
+The Docker examples bind to `0.0.0.0:5178` by default and expose the WebUI on all interfaces; for production, protect it with a firewall allowlist and preferably a reverse proxy such as Nginx or Caddy with HTTPS. If the container manages Mihomo on the Docker host, do not set `MIHOMO_HOST` to `127.0.0.1`; inside a container that points to the container itself. Use `host.docker.internal` with the host-gateway mapping instead.
 
 For first-run setup, you can start with only the persistent data directory mounted, then choose local or remote mode in the browser setup screen:
 
@@ -459,7 +459,7 @@ docker run -d \
   --name mihomo-manager-webui \
   --restart unless-stopped \
   --init \
-  -p 127.0.0.1:5178:5178 \
+  -p 0.0.0.0:5178:5178 \
   --add-host=host.docker.internal:host-gateway \
   -e LISTEN_HOST=0.0.0.0 \
   -e SERVER_CONFIG_FILE=/app/data/server.config.json \
@@ -486,7 +486,7 @@ docker run -d \
   --name mihomo-manager-webui \
   --restart unless-stopped \
   --init \
-  -p 127.0.0.1:5178:5178 \
+  -p 0.0.0.0:5178:5178 \
   --add-host=host.docker.internal:host-gateway \
   -e LISTEN_HOST=0.0.0.0 \
   -e SERVER_CONFIG_FILE=/app/data/server.config.json \
@@ -510,7 +510,7 @@ docker run -d \
 Open:
 
 ```text
-http://127.0.0.1:5178
+http://SERVER_IP:5178
 ```
 
 Stop and remove:
@@ -543,7 +543,7 @@ chmod 600 /root/.ssh/authorized_keys secrets/mihomo_manager_ed25519
 ```
 
 ```env
-MIHOMO_BIND=127.0.0.1
+MIHOMO_BIND=0.0.0.0
 MIHOMO_MODE=remote
 MIHOMO_AUTH=key
 MIHOMO_HOST=host.docker.internal
@@ -577,7 +577,7 @@ docker compose -f docker-compose.yml -f docker-compose.remote-key.yml logs -f
 docker compose -f docker-compose.yml -f docker-compose.remote-key.yml down
 ```
 
-Compose binds the WebUI to `127.0.0.1:5178` by default, persists config under `./data`, and expects private keys under `./secrets`. Do not commit `.env`, `data/`, or `secrets/` to Git.
+Compose binds the WebUI to `0.0.0.0:5178` by default, persists config under `./data`, and expects private keys under `./secrets`. Do not commit `.env`, `data/`, or `secrets/` to Git.
 
 ### Visual Operations
 

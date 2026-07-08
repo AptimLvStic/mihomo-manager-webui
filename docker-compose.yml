@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "${MIHOMO_BIND:-127.0.0.1}:5178:5178"
+      - "${MIHOMO_BIND:-0.0.0.0}:5178:5178"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
