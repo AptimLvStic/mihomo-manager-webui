@@ -787,40 +787,38 @@ async function selectProxyNode(group, name, button = null) {
 async function testSelectedGroupDelays() {
   const group = state.proxyData?.groups?.find((item) => item.name === state.selectedProxyGroup);
   if (!group) {
-    toast("请先选择代理组");
+    toast("\u8bf7\u5148\u9009\u62e9\u4ee3\u7406\u7ec4");
     return;
   }
   const names = group.options.filter((name) => state.proxyData.nodes[name]).slice(0, 120);
   if (!names.length) {
-    toast("当前代理组没有可测速节点");
+    toast("\u5f53\u524d\u4ee3\u7406\u7ec4\u6ca1\u6709\u53ef\u6d4b\u901f\u8282\u70b9");
     return;
   }
   state.testingDelays = true;
   state.testingDelayNodes = new Set(names);
-  state.proxyProgressText = `正在测试 0/${names.length}，等待节点返回...`;
+  state.proxyProgressText = `\u6b63\u5728\u5e76\u53d1\u6d4b\u901f 0/${names.length}\uff0c\u8282\u70b9\u4f1a\u6309\u8fd4\u56de\u987a\u5e8f\u66f4\u65b0...`;
   let okCount = 0;
   let doneCount = 0;
-  let errorCount = 0;
   renderProxies();
   try {
-    for (const name of names) {
-      state.proxyProgressText = `正在测试 ${doneCount + 1}/${names.length}：${name}`;
-      renderProxies();
-      let delay = null;
-      try {
-        delay = await testProxyDelay(name);
-      } catch {
-        errorCount += 1;
-      }
+    const summary = await streamProxyDelays(names, ({ name, delay }) => {
+      if (!name || !state.testingDelayNodes.has(name)) return;
       state.testingDelayNodes.delete(name);
       state.proxyDelays[name] = delay || null;
       if (delay) okCount += 1;
       doneCount += 1;
-      state.proxyProgressText = `已测试 ${doneCount}/${names.length}，可用 ${okCount}`;
+      state.proxyProgressText = `\u5df2\u8fd4\u56de ${doneCount}/${names.length}\uff0c\u53ef\u7528 ${okCount}`;
       renderProxies();
+    });
+    const timeoutCount = summary?.timeout ?? Math.max(0, names.length - okCount);
+    const suffix = timeoutCount ? `\uff0c\u8d85\u65f6 ${timeoutCount}` : "";
+    toast(`\u6d4b\u901f\u5b8c\u6210\uff1a${okCount}/${names.length} \u53ef\u7528${suffix}`);
+  } catch (error) {
+    for (const name of state.testingDelayNodes) {
+      state.proxyDelays[name] = null;
     }
-    const suffix = errorCount ? `，异常 ${errorCount}` : "";
-    toast(`测速完成：${okCount}/${names.length} 可用${suffix}`);
+    toast("\u6279\u91cf\u6d4b\u901f\u5931\u8d25", "error", error.message);
   } finally {
     state.testingDelays = false;
     state.testingDelayNodes.clear();
@@ -852,8 +850,72 @@ async function testProxyDelay(name) {
     body: { names: [name] },
     timeoutMs: 15_000,
   });
-  if (!payload.ok) throw new Error(payload.error || payload.stderr || "测速失败");
+  if (!payload.ok) throw new Error(payload.error || payload.stderr || "\u6d4b\u901f\u5931\u8d25");
   return payload.data.delays[name] || null;
+}
+
+async function streamProxyDelays(names, onDelay) {
+  const response = await fetch("/api/proxies/delays/stream", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ names }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    try {
+      const payload = JSON.parse(text);
+      throw new Error(payload.error || payload.stderr || `HTTP ${response.status}`);
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error(text || `HTTP ${response.status}`);
+      throw error;
+    }
+  }
+  if (!response.body) throw new Error("\u5f53\u524d\u6d4f\u89c8\u5668\u4e0d\u652f\u6301\u6d41\u5f0f\u6d4b\u901f\u3002");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let summary = null;
+
+  function handleBlock(block) {
+    const event = parseSseBlock(block);
+    if (!event) return;
+    if (event.type === "delay") {
+      onDelay(event.data);
+    } else if (event.type === "done") {
+      summary = event.data;
+    } else if (event.type === "error") {
+      throw new Error(event.data?.stderr || event.data?.error || "\u6d4b\u901f\u5931\u8d25");
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (value) {
+      buffer += decoder.decode(value, { stream: !done });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+      for (const block of blocks) handleBlock(block);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) handleBlock(buffer);
+  return summary;
+}
+
+function parseSseBlock(block) {
+  const lines = String(block || "").split(/\r?\n/);
+  let type = "message";
+  const data = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      type = line.slice(6).trim() || "message";
+    } else if (line.startsWith("data:")) {
+      data.push(line.slice(5).trimStart());
+    }
+  }
+  if (!data.length) return null;
+  return { type, data: JSON.parse(data.join("\n")) };
 }
 
 async function loadRules() {
@@ -1003,7 +1065,7 @@ function writeOutput(target, text) {
 }
 
 function formatDelay(delay) {
-  if (delay === "testing") return "测试中";
+  if (delay === "testing") return "...";
   if (delay === null) return "超时";
   if (!delay) return "--";
   return `${Math.round(delay)} ms`;
@@ -1083,7 +1145,7 @@ function setButtonLoading(button, loading) {
   button.disabled = loading;
 }
 
-let toastTimer;
+var toastTimer;
 function toast(message, type = "info", detail = "") {
   const element = document.querySelector("#toast");
   element.className = `toast ${type}`;

@@ -301,11 +301,20 @@ async function handleApi(req, res) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/proxies/delays/stream") {
+    const body = await readBody(req);
+    const names = normalizeProxyNames(body.names);
+    if (!names.length) {
+      sendJson(res, 400, { ok: false, error: "At least one proxy node name is required." });
+      return;
+    }
+    streamDelayResults(req, res, names);
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/proxies/delays") {
     const body = await readBody(req);
-    const names = Array.isArray(body.names)
-      ? body.names.map((name) => String(name || "").trim()).filter(Boolean).slice(0, 120)
-      : [];
+    const names = normalizeProxyNames(body.names);
     if (!names.length) {
       sendJson(res, 400, { ok: false, error: "At least one proxy node name is required." });
       return;
@@ -416,6 +425,11 @@ async function handleApi(req, res) {
 function serveStatic(req, res) {
   const url = new URL(req.url || "/", "http://127.0.0.1");
   const pathname = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
+  if (pathname === "/favicon.ico") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   const safePath = normalize(pathname).replace(/^(\.\.[/\\])+/, "");
   const filePath = join(publicDir, safePath);
   if (!filePath.startsWith(publicDir) || !existsSync(filePath)) {
@@ -1009,24 +1023,86 @@ function delayScript(names) {
 import json
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE = "http://127.0.0.1:9090"
 URL = "https://www.gstatic.com/generate_204"
 payload = json.loads(base64.b64decode("${payload}").decode("utf-8"))
+names = [str(name) for name in payload.get("names", [])[:120] if str(name)]
 result = {}
 
-for name in payload.get("names", [])[:120]:
+
+def measure(name):
     encoded = urllib.parse.quote(name, safe="")
     url = BASE + f"/proxies/{encoded}/delay?timeout=5000&url={urllib.parse.quote(URL, safe='')}"
     try:
         with urllib.request.urlopen(url, timeout=8) as resp:
             data = json.load(resp)
         delay = data.get("delay")
-        result[name] = delay if isinstance(delay, (int, float)) and delay > 0 else None
+        return name, delay if isinstance(delay, (int, float)) and delay > 0 else None
     except Exception:
-        result[name] = None
+        return name, None
+
+workers = min(48, max(1, len(names)))
+with ThreadPoolExecutor(max_workers=workers) as executor:
+    futures = [executor.submit(measure, name) for name in names]
+    for future in as_completed(futures):
+        name, delay = future.result()
+        result[name] = delay
 
 print(json.dumps({"delays": result}, ensure_ascii=False))`);
+}
+
+function delayStreamScript(names) {
+  const payload = Buffer.from(JSON.stringify({ names }), "utf8").toString("base64");
+  return controllerJsonPython(String.raw`import base64
+import json
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+BASE = "http://127.0.0.1:9090"
+URL = "https://www.gstatic.com/generate_204"
+payload = json.loads(base64.b64decode("${payload}").decode("utf-8"))
+names = [str(name) for name in payload.get("names", [])[:120] if str(name)]
+workers = min(48, max(1, len(names)))
+
+
+def emit(event, **data):
+    data["event"] = event
+    print(json.dumps(data, ensure_ascii=False), flush=True)
+
+
+def measure(name):
+    encoded = urllib.parse.quote(name, safe="")
+    url = BASE + f"/proxies/{encoded}/delay?timeout=5000&url={urllib.parse.quote(URL, safe='')}"
+    try:
+        with urllib.request.urlopen(url, timeout=8) as resp:
+            data = json.load(resp)
+        delay = data.get("delay")
+        if isinstance(delay, (int, float)) and delay > 0:
+            return name, delay, ""
+        return name, None, "timeout"
+    except Exception as exc:
+        return name, None, str(exc) or "timeout"
+
+emit("start", total=len(names), concurrency=workers)
+ok_count = 0
+timeout_count = 0
+with ThreadPoolExecutor(max_workers=workers) as executor:
+    futures = [executor.submit(measure, name) for name in names]
+    for future in as_completed(futures):
+        name, delay, error = future.result()
+        if delay:
+            ok_count += 1
+        else:
+            timeout_count += 1
+        payload = {"name": name, "delay": delay}
+        if error:
+            payload["error"] = error
+        emit("delay", **payload)
+
+emit("done", total=len(names), ok=ok_count, timeout=timeout_count)`);
 }
 
 function showUrlScript() {
@@ -1733,8 +1809,13 @@ systemctl is-active mihomo.service
 }
 
 function runRemoteScript(script, timeoutMs = 90_000, targetConfig = config) {
+  const { command, args, env } = buildScriptProcess(targetConfig);
+  return runScriptProcess(command, args, script, timeoutMs, env);
+}
+
+function buildScriptProcess(targetConfig = config) {
   if (targetConfig.mode === "local") {
-    return runScriptProcess("bash", ["-s"], script, timeoutMs);
+    return { command: "bash", args: ["-s"], env: process.env };
   }
 
   const knownHostsFile = process.env.SSH_KNOWN_HOSTS_FILE || "/tmp/mihomo_manager_known_hosts";
@@ -1760,7 +1841,7 @@ function runRemoteScript(script, timeoutMs = 90_000, targetConfig = config) {
   }
 
   args = [...args, `${targetConfig.user}@${targetConfig.host}`, "bash -s"];
-  return runScriptProcess(command, args, script, timeoutMs, env);
+  return { command, args, env };
 }
 
 function runScriptProcess(command, args, script, timeoutMs, env = process.env) {
@@ -1814,6 +1895,12 @@ function normalizeLines(value) {
   return Math.min(lines, 1000);
 }
 
+function normalizeProxyNames(value) {
+  return Array.isArray(value)
+    ? value.map((name) => String(name || "").trim()).filter(Boolean).slice(0, 120)
+    : [];
+}
+
 function readBody(req) {
   return new Promise((resolveBody, rejectBody) => {
     let raw = "";
@@ -1842,6 +1929,85 @@ function readBody(req) {
 function sendJson(res, status, payload) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
+}
+
+function writeSseEvent(res, event, payload) {
+  if (res.writableEnded || res.destroyed) return;
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function streamDelayResults(req, res, names) {
+  const { command, args, env } = buildScriptProcess(config);
+  const child = spawn(command, args, { windowsHide: true, env });
+  const timer = setTimeout(() => child.kill("SIGTERM"), 130_000);
+  let stdoutBuffer = "";
+  let stderr = "";
+  let ended = false;
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  writeSseEvent(res, "ready", { ok: true, total: names.length });
+
+  function finish() {
+    if (ended) return;
+    ended = true;
+    clearTimeout(timer);
+    if (!res.writableEnded) res.end();
+  }
+
+  function processLine(line) {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const payload = JSON.parse(trimmed);
+      writeSseEvent(res, String(payload.event || "message"), payload);
+    } catch {
+      writeSseEvent(res, "log", { line: scrub(trimmed) });
+    }
+  }
+
+  req.on("close", () => {
+    if (!ended && !res.writableEnded) child.kill("SIGTERM");
+  });
+
+  child.stdout.on("data", (chunk) => {
+    stdoutBuffer += chunk.toString("utf8");
+    const lines = stdoutBuffer.split(/\r?\n/);
+    stdoutBuffer = lines.pop() || "";
+    for (const line of lines) processLine(line);
+  });
+
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+
+  child.on("error", (error) => {
+    writeSseEvent(res, "error", { ok: false, error: error.message });
+    finish();
+  });
+
+  child.on("close", (code, signal) => {
+    if (stdoutBuffer) processLine(stdoutBuffer);
+    if (code !== 0) {
+      writeSseEvent(res, "error", {
+        ok: false,
+        code,
+        signal,
+        error: "Delay test process failed.",
+        stderr: scrub(stderr),
+      });
+    }
+    writeSseEvent(res, "end", { ok: code === 0, code, signal, stderr: scrub(stderr) });
+    finish();
+  });
+
+  child.stdin.write(delayStreamScript(names));
+  child.stdin.end();
 }
 
 function sendJsonResult(res, result) {
