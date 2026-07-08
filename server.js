@@ -857,6 +857,15 @@ bind_address = str(payload.get("bindAddress") or "127.0.0.1").strip()
 if not re.fullmatch(r"[0-9A-Fa-f:.%*]+|localhost", bind_address):
     raise SystemExit("invalid bind address")
 
+def requires_allow_lan(address):
+    value = str(address or "").strip().lower()
+    if not value:
+        return False
+    return value not in {"127.0.0.1", "localhost", "::1"} and not value.startswith("127.")
+
+if requires_allow_lan(bind_address):
+    allow_lan = True
+
 inbounds = payload.get("inbounds") or {}
 known = {
     "http": ("port", "HTTP", 7890),
@@ -1488,8 +1497,13 @@ def current_prefix():
                 prefix.append(f"{key}: {scalars[key]}")
     else:
         prefix.extend(["mixed-port: 7890", "socks-port: 7891"])
-    prefix.append(f"allow-lan: {scalars.get('allow-lan', 'false') or 'false'}")
-    prefix.append(f"bind-address: {scalars.get('bind-address', '127.0.0.1') or '127.0.0.1'}")
+    allow_lan = scalars.get('allow-lan', 'false') or 'false'
+    bind_address = scalars.get('bind-address', '127.0.0.1') or '127.0.0.1'
+    normalized_bind = str(bind_address).strip().strip("'").strip('"').lower()
+    if normalized_bind not in {"127.0.0.1", "localhost", "::1"} and not normalized_bind.startswith("127."):
+        allow_lan = "true"
+    prefix.append(f"allow-lan: {allow_lan}")
+    prefix.append(f"bind-address: {bind_address}")
     prefix.append(f"log-level: {scalars.get('log-level', 'info') or 'info'}")
     prefix.append(f"external-controller: {scalars.get('external-controller', '127.0.0.1:9090') or '127.0.0.1:9090'}")
     if tun_block:

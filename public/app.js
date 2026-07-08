@@ -125,6 +125,9 @@ document.querySelector("#reloadCoreProxySettingsBtn").addEventListener("click", 
   await loadCoreProxySettings(true, event.currentTarget);
 });
 
+document.querySelector("#coreBindAddress").addEventListener("change", () => syncAllowLanWithBindAddress(true));
+document.querySelector("#coreAllowLan").addEventListener("change", () => syncAllowLanWithBindAddress(true));
+
 document.querySelectorAll("[data-inbound-toggle]").forEach((element) => {
   element.addEventListener("change", updateInboundPortStates);
 });
@@ -392,10 +395,29 @@ async function loadCoreProxySettings(force = false, button = null) {
   }
 }
 
+function requiresAllowLan(bindAddress) {
+  const value = String(bindAddress || "").trim().toLowerCase();
+  if (!value) return false;
+  return !["127.0.0.1", "localhost", "::1"].includes(value) && !value.startsWith("127.");
+}
+
+function syncAllowLanWithBindAddress(notify = false) {
+  const bindAddressInput = document.querySelector("#coreBindAddress");
+  const allowLanInput = document.querySelector("#coreAllowLan");
+  if (!bindAddressInput || !allowLanInput) return;
+  if (!requiresAllowLan(bindAddressInput.value) || allowLanInput.checked) return;
+
+  allowLanInput.checked = true;
+  if (notify) {
+    toast("\u5df2\u81ea\u52a8\u542f\u7528\u5c40\u57df\u7f51\u8fde\u63a5", "info", "\u7ed1\u5b9a\u5730\u5740\u4e0d\u662f\u672c\u673a\u5730\u5740\u65f6\uff0cMihomo \u9700\u8981\u5f00\u542f allow-lan \u624d\u4f1a\u5b9e\u9645\u76d1\u542c\u8be5\u5730\u5740\u3002");
+  }
+}
+
 function renderCoreProxySettings(data) {
   document.querySelector("#coreProxyMode").value = data.mode || "Rule";
   document.querySelector("#coreBindAddress").value = data.bindAddress || "127.0.0.1";
   document.querySelector("#coreAllowLan").checked = Boolean(data.allowLan);
+  syncAllowLanWithBindAddress();
   for (const [name, fields] of Object.entries(inboundFieldMap)) {
     const inbound = data.inbounds?.[name] || {};
     document.querySelector(fields.enabled).checked = Boolean(inbound.enabled);
@@ -420,6 +442,7 @@ function updateInboundPortStates() {
 }
 
 function readCoreProxySettings() {
+  syncAllowLanWithBindAddress();
   const inbounds = {};
   for (const [name, fields] of Object.entries(inboundFieldMap)) {
     inbounds[name] = {
