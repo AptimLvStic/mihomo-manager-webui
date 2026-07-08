@@ -261,6 +261,19 @@ async function handleApi(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/mihomo/proxy-settings") {
+    const result = await runRemoteScript(mihomoProxySettingsScript(), 60_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mihomo/proxy-settings") {
+    const body = await readBody(req);
+    const result = await runRemoteScript(setMihomoProxySettingsScript(body), 120_000);
+    sendJson(res, result.code === 0 ? 200 : 500, result);
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/logs") {
     const target = url.searchParams.get("target") === "subscription" ? "subscription" : "mihomo";
     const lines = normalizeLines(url.searchParams.get("lines"));
@@ -541,6 +554,44 @@ PY
     printf '%s\n' "$value" | sed -E 's/((token|access_token|key|secret|password|passwd)=)[^&[:space:]]+/\1***/Ig'
   fi
 }
+
+load_core_proxy_env() {
+  HTTP_PROXY_URL=
+  SOCKS_PROXY_URL=
+  if command -v python3 >/dev/null 2>&1 && [ -r "$CONFIG_FILE" ]; then
+    eval "$(python3 - "$CONFIG_FILE" <<'PY'
+import re
+import shlex
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="ignore")
+values = {}
+for line in text.splitlines():
+    if line[:1].isspace():
+        continue
+    m = re.match(r"^([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*(?:#.*)?$", line)
+    if not m:
+        continue
+    key, value = m.group(1), m.group(2).strip().strip('"\'')
+    values[key] = value
+
+def port(name):
+    raw = values.get(name, "")
+    return raw if raw.isdigit() and 1 <= int(raw) <= 65535 else ""
+
+http_port = port("mixed-port") or port("port")
+socks_port = port("socks-port") or port("mixed-port")
+if http_port:
+    print("HTTP_PROXY_URL=" + shlex.quote(f"http://127.0.0.1:{http_port}"))
+if socks_port:
+    print("SOCKS_PROXY_URL=" + shlex.quote(f"socks5h://127.0.0.1:{socks_port}"))
+PY
+)"
+  fi
+  if [ -z "$HTTP_PROXY_URL" ]; then HTTP_PROXY_URL=http://127.0.0.1:7890; fi
+  if [ -z "$SOCKS_PROXY_URL" ]; then SOCKS_PROXY_URL=socks5h://127.0.0.1:7891; fi
+}
 `;
 }
 
@@ -585,17 +636,7 @@ else
   printf 'Mihomo binary: %s\n' "$bin_path"
   printf 'Listening ports:\n'
 fi
-ss -ltnp 2>/dev/null | grep -E '127\\.0\\.0\\.1:(7890|7891|9090)\\b' || true
-if [ "$WEBUI_LANG" = zh ]; then
-  printf 'Proxychains 配置：'
-else
-  printf 'Proxychains config: '
-fi
-if [ -e "$PROXYCHAINS_CONF" ]; then
-  printf '%s\n' "$PROXYCHAINS_CONF"
-else
-  if [ "$WEBUI_LANG" = zh ]; then printf '(缺失)\n'; else printf '(missing)\n'; fi
-fi
+ss -ltnp 2>/dev/null | grep -E 'mihomo|:9090\\b' || true
 ${proxyStatusBody()}
 `;
 }
@@ -603,7 +644,7 @@ ${proxyStatusBody()}
 function portsScript() {
   return `${remoteBase()}
 if [ "$WEBUI_LANG" = zh ]; then printf 'Mihomo 监听端口：\n'; else printf 'Mihomo listening ports:\n'; fi
-ss -ltnp 2>/dev/null | grep -E '127\\.0\\.0\\.1:(7890|7891|9090)\\b' || true
+ss -ltnp 2>/dev/null | grep -E 'mihomo|:9090\\b' || true
 `;
 }
 
@@ -694,6 +735,240 @@ print(json.dumps({
     "policies": dict(policy_counter.most_common(20)),
     "rules": items,
 }, ensure_ascii=False))`);
+}
+
+function mihomoProxySettingsScript() {
+  return controllerJsonPython(String.raw`import json
+import re
+from pathlib import Path
+
+CONFIG_FILE = Path("/etc/mihomo/config.yaml")
+text = CONFIG_FILE.read_text(encoding="utf-8", errors="ignore") if CONFIG_FILE.exists() else ""
+
+scalars = {}
+lines = text.splitlines()
+for index, line in enumerate(lines):
+    if line[:1].isspace():
+        continue
+    m = re.match(r"^([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*(?:#.*)?$", line)
+    if m:
+        scalars[m.group(1)] = m.group(2).strip().strip('"\'')
+
+def to_bool(value, default=False):
+    if value is None or value == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+def to_port(value, default):
+    raw = str(value or "").strip()
+    return int(raw) if raw.isdigit() and 1 <= int(raw) <= 65535 else default
+
+def inbound(name, key, default_port):
+    return {
+        "name": name,
+        "key": key,
+        "enabled": key in scalars,
+        "port": to_port(scalars.get(key), default_port),
+        "defaultPort": default_port,
+    }
+
+def parse_tun():
+    result = {
+        "enabled": False,
+        "stack": "system",
+        "autoRoute": False,
+        "strictRoute": False,
+        "dnsHijack": "any:53",
+    }
+    for index, line in enumerate(lines):
+        if re.match(r"^tun\s*:\s*(?:#.*)?$", line):
+            block = []
+            for item in lines[index + 1:]:
+                if item and not item[:1].isspace() and re.match(r"^[A-Za-z0-9_-]+\s*:", item):
+                    break
+                block.append(item)
+            dns_values = []
+            in_dns = False
+            for item in block:
+                stripped = item.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                m = re.match(r"^([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*(?:#.*)?$", stripped)
+                if m:
+                    key, value = m.group(1), m.group(2).strip().strip('"\'')
+                    in_dns = key == "dns-hijack"
+                    if key == "enable": result["enabled"] = to_bool(value)
+                    elif key == "stack" and value in {"system", "gvisor", "mixed"}: result["stack"] = value
+                    elif key == "auto-route": result["autoRoute"] = to_bool(value)
+                    elif key == "strict-route": result["strictRoute"] = to_bool(value)
+                    elif key == "dns-hijack" and value and not value.startswith("["):
+                        dns_values.append(value)
+                    elif key == "dns-hijack" and value.startswith("["):
+                        dns_values.extend(part.strip().strip('"\'') for part in value.strip("[]").split(",") if part.strip())
+                    continue
+                if in_dns and stripped.startswith("-"):
+                    dns_values.append(stripped[1:].strip().strip('"\''))
+            if dns_values:
+                result["dnsHijack"] = ", ".join(dns_values)
+            break
+    return result
+
+mode = scalars.get("mode", "Rule")
+mode_map = {"rule": "Rule", "global": "Global", "direct": "Direct"}
+mode = mode_map.get(str(mode).lower(), "Rule")
+
+print(json.dumps({
+    "mode": mode,
+    "allowLan": to_bool(scalars.get("allow-lan"), False),
+    "bindAddress": scalars.get("bind-address", "127.0.0.1") or "127.0.0.1",
+    "inbounds": {
+        "http": inbound("HTTP", "port", 7890),
+        "socks": inbound("SOCKS5", "socks-port", 7891),
+        "mixed": inbound("Mixed", "mixed-port", 7890),
+        "redir": inbound("Redir", "redir-port", 7892),
+        "tproxy": inbound("TProxy", "tproxy-port", 7893),
+    },
+    "tun": parse_tun(),
+}, ensure_ascii=False))`);
+}
+
+function setMihomoProxySettingsScript(settings) {
+  const encoded = Buffer.from(JSON.stringify(settings || {}), "utf8").toString("base64");
+  return `${remoteBase()}
+payload=${shellQuote(encoded)}
+tmp_file=$(python3 - "$payload" "$CONFIG_FILE" <<'PY'
+import base64
+import json
+import re
+import sys
+from pathlib import Path
+
+payload = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+config = Path(sys.argv[2])
+text = config.read_text(encoding="utf-8", errors="ignore") if config.exists() else ""
+
+mode_map = {"rule": "Rule", "global": "Global", "direct": "Direct"}
+mode = mode_map.get(str(payload.get("mode", "Rule")).strip().lower())
+if not mode:
+    raise SystemExit("invalid proxy mode")
+
+allow_lan = bool(payload.get("allowLan", False))
+bind_address = str(payload.get("bindAddress") or "127.0.0.1").strip()
+if not re.fullmatch(r"[0-9A-Fa-f:.%*]+|localhost", bind_address):
+    raise SystemExit("invalid bind address")
+
+inbounds = payload.get("inbounds") or {}
+known = {
+    "http": ("port", "HTTP", 7890),
+    "socks": ("socks-port", "SOCKS5", 7891),
+    "mixed": ("mixed-port", "Mixed", 7890),
+    "redir": ("redir-port", "Redir", 7892),
+    "tproxy": ("tproxy-port", "TProxy", 7893),
+}
+selected = []
+used_ports = {}
+for name, (key, label, default_port) in known.items():
+    item = inbounds.get(name) or {}
+    if not item.get("enabled"):
+        continue
+    try:
+        port = int(item.get("port") or default_port)
+    except Exception:
+        raise SystemExit(f"invalid {label} port")
+    if not 1 <= port <= 65535:
+        raise SystemExit(f"{label} port must be between 1 and 65535")
+    if port in used_ports:
+        raise SystemExit(f"port {port} is used by both {used_ports[port]} and {label}")
+    used_ports[port] = label
+    selected.append((key, port))
+
+tun = payload.get("tun") or {}
+tun_enabled = bool(tun.get("enabled", False))
+stack = str(tun.get("stack") or "system").strip().lower()
+if stack not in {"system", "gvisor", "mixed"}:
+    raise SystemExit("invalid TUN stack")
+auto_route = bool(tun.get("autoRoute", False))
+strict_route = bool(tun.get("strictRoute", False))
+dns_values = []
+for part in re.split(r"[,\\n]", str(tun.get("dnsHijack") or "any:53")):
+    value = part.strip()
+    if not value:
+        continue
+    if not re.fullmatch(r"[A-Za-z0-9_.:/*+-]+", value):
+        raise SystemExit("invalid TUN DNS hijack value")
+    dns_values.append(value)
+if tun_enabled and not dns_values:
+    dns_values = ["any:53"]
+
+if not selected and not tun_enabled:
+    raise SystemExit("enable at least one Mihomo inbound or TUN mode")
+
+skip_scalar = {"mode", "allow-lan", "bind-address", "port", "socks-port", "mixed-port", "redir-port", "tproxy-port"}
+lines = text.splitlines()
+out = []
+i = 0
+while i < len(lines):
+    line = lines[i]
+    if not line[:1].isspace():
+        m = re.match(r"^([A-Za-z0-9_-]+)\s*:", line)
+        if m and m.group(1) in skip_scalar:
+            i += 1
+            continue
+        if m and m.group(1) == "tun":
+            i += 1
+            while i < len(lines):
+                next_line = lines[i]
+                if next_line and not next_line[:1].isspace() and re.match(r"^[A-Za-z0-9_-]+\s*:", next_line):
+                    break
+                i += 1
+            continue
+    out.append(line.rstrip())
+    i += 1
+
+prefix = [f"mode: {mode}"]
+for key, port in selected:
+    prefix.append(f"{key}: {port}")
+prefix.extend([
+    f"allow-lan: {str(allow_lan).lower()}",
+    "bind-address: " + json.dumps(bind_address, ensure_ascii=False),
+])
+if tun_enabled:
+    prefix.extend([
+        "tun:",
+        "  enable: true",
+        f"  stack: {stack}",
+        f"  auto-route: {str(auto_route).lower()}",
+        f"  strict-route: {str(strict_route).lower()}",
+        "  dns-hijack:",
+    ])
+    prefix.extend(f"    - {value}" for value in dns_values)
+
+while out and not out[0].strip():
+    out.pop(0)
+new_text = "\\n".join(prefix + [""] + out).rstrip() + "\\n"
+tmp = config.with_suffix(config.suffix + ".proxy.tmp")
+tmp.write_text(new_text, encoding="utf-8")
+print(tmp)
+PY
+)
+bin_path=$(mihomo_bin) || { if [ "$WEBUI_LANG" = zh ]; then printf '[错误] 未找到 mihomo。\n' >&2; else printf '[ERROR] Mihomo binary not found.\n' >&2; fi; exit 1; }
+check_log=/tmp/mihomo-proxy-settings-check.log
+if "$bin_path" -t -d "$CONFIG_DIR" -f "$tmp_file" >"$check_log" 2>&1; then
+  if [ -f "$CONFIG_FILE" ]; then
+    cp -a "$CONFIG_FILE" "$CONFIG_FILE.backup.$(date +%Y%m%d%H%M%S)"
+  fi
+  install -m 600 "$tmp_file" "$CONFIG_FILE"
+  rm -f "$tmp_file"
+else
+  cat "$check_log" >&2
+  rm -f "$tmp_file"
+  exit 1
+fi
+if systemctl is-active --quiet mihomo.service 2>/dev/null; then
+  systemctl restart mihomo.service
+fi
+if [ "$WEBUI_LANG" = zh ]; then printf '[信息] Mihomo 内核代理配置已更新并通过校验。\n'; else printf '[INFO] Mihomo core proxy settings updated and validated.\n'; fi
+`;
 }
 
 function selectProxyScript(group, name) {
@@ -943,6 +1218,7 @@ ${proxyStatusBody()}
 
 function proxyEnvScript() {
   return `${remoteBase()}
+load_core_proxy_env
 cat <<EOF
 export http_proxy="$HTTP_PROXY_URL"
 export https_proxy="$HTTP_PROXY_URL"
@@ -958,6 +1234,7 @@ EOF
 
 function proxyOnScript() {
   return `${remoteBase()}
+load_core_proxy_env
 cat > "$PROFILE_PROXY" <<EOF
 # Managed by mihomo-manager-webui. Applies to new login shells.
 export http_proxy="$HTTP_PROXY_URL"
@@ -1090,22 +1367,19 @@ if ! command -v curl >/dev/null 2>&1; then
   if [ "$WEBUI_LANG" = zh ]; then printf '[错误] 缺少命令：curl\n' >&2; else printf '[ERROR] Missing command: curl\n' >&2; fi
   exit 1
 fi
+load_core_proxy_env
 if [ "$WEBUI_LANG" = zh ]; then printf 'Mihomo 服务：'; else printf 'Mihomo service: '; fi
 systemctl is-active mihomo.service 2>/dev/null || true
-if [ "$WEBUI_LANG" = zh ]; then printf 'SOCKS5 Google 204：'; else printf 'SOCKS5 google 204: '; fi
-curl -4 -sS -o /dev/null -w 'code=%{http_code} time=%{time_total}\n' --socks5-hostname 127.0.0.1:7891 --connect-timeout 8 --max-time 25 https://www.google.com/generate_204 || true
-if [ "$WEBUI_LANG" = zh ]; then printf 'SOCKS5 出口 IP：'; else printf 'SOCKS5 exit IP: '; fi
-curl -4 -sS --socks5-hostname 127.0.0.1:7891 --connect-timeout 8 --max-time 25 https://api.ipify.org || true
+if [ "$WEBUI_LANG" = zh ]; then printf 'HTTP/Mixed Google 204：'; else printf 'HTTP/Mixed google 204: '; fi
+curl -4 -sS -o /dev/null -w 'code=%{http_code} time=%{time_total}\n' -x "$HTTP_PROXY_URL" --connect-timeout 8 --max-time 25 https://www.google.com/generate_204 || true
+if [ "$WEBUI_LANG" = zh ]; then printf 'HTTP/Mixed 出口 IP：'; else printf 'HTTP/Mixed exit IP: '; fi
+curl -4 -sS -x "$HTTP_PROXY_URL" --connect-timeout 8 --max-time 25 https://api.ipify.org || true
 printf '\n'
-if command -v proxychains4 >/dev/null 2>&1; then
-  if [ "$WEBUI_LANG" = zh ]; then printf 'Proxychains Google 204：'; else printf 'Proxychains google 204: '; fi
-  proxychains4 -q -f "$PROXYCHAINS_CONF" curl -4 -sS -o /dev/null -w 'code=%{http_code} time=%{time_total}\n' --connect-timeout 8 --max-time 25 https://www.google.com/generate_204 || true
-  if [ "$WEBUI_LANG" = zh ]; then printf 'Proxychains 出口 IP：'; else printf 'Proxychains exit IP: '; fi
-  proxychains4 -q -f "$PROXYCHAINS_CONF" curl -4 -sS --connect-timeout 8 --max-time 25 https://api.ipify.org || true
-  printf '\n'
-else
-  if [ "$WEBUI_LANG" = zh ]; then printf '[警告] proxychains4 未安装。\n' >&2; else printf '[WARN] proxychains4 is not installed.\n' >&2; fi
-fi
+if [ "$WEBUI_LANG" = zh ]; then printf 'SOCKS5/Mixed Google 204：'; else printf 'SOCKS5/Mixed google 204: '; fi
+curl -4 -sS -o /dev/null -w 'code=%{http_code} time=%{time_total}\n' --socks5-hostname "\${SOCKS_PROXY_URL#socks5h://}" --connect-timeout 8 --max-time 25 https://www.google.com/generate_204 || true
+if [ "$WEBUI_LANG" = zh ]; then printf 'SOCKS5/Mixed 出口 IP：'; else printf 'SOCKS5/Mixed exit IP: '; fi
+curl -4 -sS --socks5-hostname "\${SOCKS_PROXY_URL#socks5h://}" --connect-timeout 8 --max-time 25 https://api.ipify.org || true
+printf '\n'
 `;
 }
 
@@ -1139,36 +1413,93 @@ function updateFunctionBody() {
     curl_args+=(--proxy "$HTTP_PROXY_URL")
   fi
   curl "\${curl_args[@]}" "$SUBSCRIPTION_URL" -o "$raw_file"
-  python3 - "$raw_file" "$cfg_file" <<'PY'
+  python3 - "$raw_file" "$cfg_file" "$CONFIG_FILE" <<'PY'
 import re
 import sys
 from pathlib import Path
 
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
+current = Path(sys.argv[3])
 text = src.read_text(encoding="utf-8", errors="ignore")
 if "proxies:" not in text:
     raise SystemExit("subscription does not look like Clash YAML")
-remove = {
-    "port", "socks-port", "mixed-port", "redir-port", "tproxy-port",
+
+managed_scalars = {
+    "mode", "port", "socks-port", "mixed-port", "redir-port", "tproxy-port",
     "allow-lan", "bind-address", "external-controller", "log-level"
 }
-out = []
-for line in text.splitlines():
-    m = re.match(r"^([A-Za-z0-9_-]+)\s*:", line)
-    if m and m.group(1) in remove:
-        continue
-    out.append(line.rstrip())
-prefix = [
-    "mixed-port: 7890",
-    "socks-port: 7891",
-    "allow-lan: false",
-    "bind-address: 127.0.0.1",
-    "log-level: info",
-    "external-controller: 127.0.0.1:9090",
-    "",
-]
-dst.write_text("\n".join(prefix + out) + "\n", encoding="utf-8")
+
+def strip_managed_blocks(source_text):
+    lines = source_text.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line[:1].isspace():
+            m = re.match(r"^([A-Za-z0-9_-]+)\s*:", line)
+            if m and m.group(1) in managed_scalars:
+                i += 1
+                continue
+            if m and m.group(1) == "tun":
+                i += 1
+                while i < len(lines):
+                    next_line = lines[i]
+                    if next_line and not next_line[:1].isspace() and re.match(r"^[A-Za-z0-9_-]+\s*:", next_line):
+                        break
+                    i += 1
+                continue
+        out.append(line.rstrip())
+        i += 1
+    return out
+
+def current_prefix():
+    existing = current.read_text(encoding="utf-8", errors="ignore") if current.exists() else ""
+    scalars = {}
+    tun_block = []
+    lines = existing.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line[:1].isspace():
+            m = re.match(r"^([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*(?:#.*)?$", line)
+            if m and m.group(1) in managed_scalars:
+                scalars[m.group(1)] = m.group(2).strip()
+                i += 1
+                continue
+            if m and m.group(1) == "tun":
+                tun_block = [line.rstrip()]
+                i += 1
+                while i < len(lines):
+                    next_line = lines[i]
+                    if next_line and not next_line[:1].isspace() and re.match(r"^[A-Za-z0-9_-]+\s*:", next_line):
+                        break
+                    tun_block.append(next_line.rstrip())
+                    i += 1
+                continue
+        i += 1
+
+    prefix = []
+    prefix.append(f"mode: {scalars.get('mode', 'Rule') or 'Rule'}")
+    port_keys = ["port", "socks-port", "mixed-port", "redir-port", "tproxy-port"]
+    if any(key in scalars for key in port_keys):
+        for key in port_keys:
+            if key in scalars and scalars[key]:
+                prefix.append(f"{key}: {scalars[key]}")
+    else:
+        prefix.extend(["mixed-port: 7890", "socks-port: 7891"])
+    prefix.append(f"allow-lan: {scalars.get('allow-lan', 'false') or 'false'}")
+    prefix.append(f"bind-address: {scalars.get('bind-address', '127.0.0.1') or '127.0.0.1'}")
+    prefix.append(f"log-level: {scalars.get('log-level', 'info') or 'info'}")
+    prefix.append(f"external-controller: {scalars.get('external-controller', '127.0.0.1:9090') or '127.0.0.1:9090'}")
+    if tun_block:
+        prefix.extend(tun_block)
+    return prefix
+
+out = strip_managed_blocks(text)
+while out and not out[0].strip():
+    out.pop(0)
+dst.write_text("\n".join(current_prefix() + [""] + out).rstrip() + "\n", encoding="utf-8")
 PY
   check_log=/tmp/mihomo-config-check.log
   if "$bin_path" -t -d "$CONFIG_DIR" -f "$cfg_file" >"$check_log" 2>&1; then

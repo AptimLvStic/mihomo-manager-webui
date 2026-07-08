@@ -125,7 +125,7 @@
               <strong id="systemProxyMetric">--</strong>
             </article>
             <article class="metric">
-              <span>Proxychains</span>
+              <span>内核入口</span>
               <strong id="proxychainsMetric">--</strong>
             </article>
           </div>
@@ -303,7 +303,97 @@
           <div class="split-layout">
             <section class="panel">
               <div class="panel-heading">
-                <h2>系统代理</h2>
+                <div>
+                  <h2>Mihomo 内核代理</h2>
+                  <p class="panel-subtitle" id="coreProxySummary">读取当前代理入口</p>
+                </div>
+                <button class="ghost-button" id="reloadCoreProxySettingsBtn" type="button">重新读取</button>
+              </div>
+              <form class="stack" id="coreProxyForm">
+                <div class="form-grid">
+                  <label>
+                    <span>代理模式</span>
+                    <select id="coreProxyMode">
+                      <option value="Rule">Rule</option>
+                      <option value="Global">Global</option>
+                      <option value="Direct">Direct</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>绑定地址</span>
+                    <input id="coreBindAddress" autocomplete="off" placeholder="127.0.0.1 / 0.0.0.0" />
+                  </label>
+                </div>
+                <label class="toggle-row compact">
+                  <input id="coreAllowLan" type="checkbox" />
+                  <span>允许局域网连接</span>
+                </label>
+
+                <div class="inbound-list">
+                  <label class="inbound-row">
+                    <input id="inboundHttpEnabled" data-inbound-toggle="http" type="checkbox" />
+                    <span>HTTP</span>
+                    <input id="inboundHttpPort" inputmode="numeric" min="1" max="65535" type="number" />
+                  </label>
+                  <label class="inbound-row">
+                    <input id="inboundSocksEnabled" data-inbound-toggle="socks" type="checkbox" />
+                    <span>SOCKS5</span>
+                    <input id="inboundSocksPort" inputmode="numeric" min="1" max="65535" type="number" />
+                  </label>
+                  <label class="inbound-row">
+                    <input id="inboundMixedEnabled" data-inbound-toggle="mixed" type="checkbox" />
+                    <span>Mixed</span>
+                    <input id="inboundMixedPort" inputmode="numeric" min="1" max="65535" type="number" />
+                  </label>
+                  <label class="inbound-row">
+                    <input id="inboundRedirEnabled" data-inbound-toggle="redir" type="checkbox" />
+                    <span>Redir</span>
+                    <input id="inboundRedirPort" inputmode="numeric" min="1" max="65535" type="number" />
+                  </label>
+                  <label class="inbound-row">
+                    <input id="inboundTproxyEnabled" data-inbound-toggle="tproxy" type="checkbox" />
+                    <span>TProxy</span>
+                    <input id="inboundTproxyPort" inputmode="numeric" min="1" max="65535" type="number" />
+                  </label>
+                </div>
+
+                <div class="tun-grid">
+                  <label class="toggle-row compact">
+                    <input id="tunEnabled" type="checkbox" />
+                    <span>TUN</span>
+                  </label>
+                  <label>
+                    <span>TUN Stack</span>
+                    <select id="tunStack">
+                      <option value="system">system</option>
+                      <option value="gvisor">gvisor</option>
+                      <option value="mixed">mixed</option>
+                    </select>
+                  </label>
+                  <label class="toggle-row compact">
+                    <input id="tunAutoRoute" type="checkbox" />
+                    <span>auto-route</span>
+                  </label>
+                  <label class="toggle-row compact">
+                    <input id="tunStrictRoute" type="checkbox" />
+                    <span>strict-route</span>
+                  </label>
+                  <label class="tun-dns">
+                    <span>dns-hijack</span>
+                    <input id="tunDnsHijack" autocomplete="off" placeholder="any:53" />
+                  </label>
+                </div>
+
+                <div class="inline-controls">
+                  <button class="primary-button" id="saveCoreProxySettingsBtn" type="submit">保存并重启内核</button>
+                  <button data-run="test" type="button">连通性测试</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>系统环境代理</h2>
                 <button class="ghost-button" data-run="proxy-status" type="button">查看状态</button>
               </div>
               <div class="button-list">
@@ -312,19 +402,8 @@
                 <button data-run="proxy-env" type="button">当前 shell 环境变量</button>
               </div>
             </section>
-
-            <section class="panel">
-              <div class="panel-heading">
-                <h2>Proxychains</h2>
-              </div>
-              <div class="button-list">
-                <button data-action="proxychains" type="button">重建配置</button>
-                <button data-run="proxychains-show" type="button">查看配置</button>
-                <button data-run="test" type="button">连通性测试</button>
-              </div>
-            </section>
           </div>
-          <pre class="terminal" id="proxyOutput">系统代理和 Proxychains 输出会显示在这里。</pre>
+          <pre class="terminal" id="proxyOutput">Mihomo 内核代理和系统环境代理输出会显示在这里。</pre>
         </section>
 
         <section class="view" id="logs">

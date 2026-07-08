@@ -9,6 +9,7 @@ const state = {
   testingDelayNodes: new Set(),
   proxyProgressText: "",
   subscriptionSettings: null,
+  mihomoProxySettings: null,
 };
 
 const titles = {
@@ -107,6 +108,19 @@ document.querySelector("#saveAndUpdateSubscriptionBtn").addEventListener("click"
   await saveSubscriptionSettings(true);
 });
 
+document.querySelector("#coreProxyForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await saveCoreProxySettings(event.submitter);
+});
+
+document.querySelector("#reloadCoreProxySettingsBtn").addEventListener("click", async (event) => {
+  await loadCoreProxySettings(true, event.currentTarget);
+});
+
+document.querySelectorAll("[data-inbound-toggle]").forEach((element) => {
+  element.addEventListener("change", updateInboundPortStates);
+});
+
 document.querySelector("#ruleForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const type = document.querySelector("#ruleType").value.trim();
@@ -179,6 +193,9 @@ function setView(view) {
   }
   if (view === "rules") {
     loadRulePolicies();
+  }
+  if (view === "proxy" && !state.mihomoProxySettings) {
+    loadCoreProxySettings();
   }
 }
 
@@ -345,6 +362,110 @@ function writeSubscriptionSummary(data) {
     ["定时器", data.timer || "--"],
   ];
   output.textContent = rows.map(([label, value]) => `${label}：${value}`).join("\n");
+}
+
+const inboundFieldMap = {
+  http: { enabled: "#inboundHttpEnabled", port: "#inboundHttpPort", label: "HTTP" },
+  socks: { enabled: "#inboundSocksEnabled", port: "#inboundSocksPort", label: "SOCKS5" },
+  mixed: { enabled: "#inboundMixedEnabled", port: "#inboundMixedPort", label: "Mixed" },
+  redir: { enabled: "#inboundRedirEnabled", port: "#inboundRedirPort", label: "Redir" },
+  tproxy: { enabled: "#inboundTproxyEnabled", port: "#inboundTproxyPort", label: "TProxy" },
+};
+
+async function loadCoreProxySettings(force = false, button = null) {
+  if (state.mihomoProxySettings && !force) {
+    renderCoreProxySettings(state.mihomoProxySettings);
+    return;
+  }
+  setButtonLoading(button, true);
+  document.querySelector("#coreProxySummary").textContent = "正在读取当前代理入口...";
+  try {
+    const payload = await requestJson("/api/mihomo/proxy-settings", { timeoutMs: 60_000 });
+    if (!payload.ok) throw new Error(payload.error || payload.stderr || "读取 Mihomo 代理配置失败");
+    state.mihomoProxySettings = payload.data;
+    renderCoreProxySettings(payload.data);
+  } catch (error) {
+    document.querySelector("#coreProxySummary").textContent = error.message;
+    toast("读取内核代理配置失败", "error", error.message);
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+function renderCoreProxySettings(data) {
+  document.querySelector("#coreProxyMode").value = data.mode || "Rule";
+  document.querySelector("#coreBindAddress").value = data.bindAddress || "127.0.0.1";
+  document.querySelector("#coreAllowLan").checked = Boolean(data.allowLan);
+  for (const [name, fields] of Object.entries(inboundFieldMap)) {
+    const inbound = data.inbounds?.[name] || {};
+    document.querySelector(fields.enabled).checked = Boolean(inbound.enabled);
+    document.querySelector(fields.port).value = inbound.port || inbound.defaultPort || "";
+  }
+  const tun = data.tun || {};
+  document.querySelector("#tunEnabled").checked = Boolean(tun.enabled);
+  document.querySelector("#tunStack").value = tun.stack || "system";
+  document.querySelector("#tunAutoRoute").checked = Boolean(tun.autoRoute);
+  document.querySelector("#tunStrictRoute").checked = Boolean(tun.strictRoute);
+  document.querySelector("#tunDnsHijack").value = tun.dnsHijack || "any:53";
+  updateInboundPortStates();
+  writeCoreProxySummary(data);
+}
+
+function updateInboundPortStates() {
+  for (const fields of Object.values(inboundFieldMap)) {
+    const enabled = document.querySelector(fields.enabled).checked;
+    const portInput = document.querySelector(fields.port);
+    portInput.disabled = state.busy || !enabled;
+  }
+}
+
+function readCoreProxySettings() {
+  const inbounds = {};
+  for (const [name, fields] of Object.entries(inboundFieldMap)) {
+    inbounds[name] = {
+      enabled: document.querySelector(fields.enabled).checked,
+      port: Number(document.querySelector(fields.port).value || 0),
+    };
+  }
+  return {
+    mode: document.querySelector("#coreProxyMode").value,
+    bindAddress: document.querySelector("#coreBindAddress").value.trim() || "127.0.0.1",
+    allowLan: document.querySelector("#coreAllowLan").checked,
+    inbounds,
+    tun: {
+      enabled: document.querySelector("#tunEnabled").checked,
+      stack: document.querySelector("#tunStack").value,
+      autoRoute: document.querySelector("#tunAutoRoute").checked,
+      strictRoute: document.querySelector("#tunStrictRoute").checked,
+      dnsHijack: document.querySelector("#tunDnsHijack").value.trim() || "any:53",
+    },
+  };
+}
+
+async function saveCoreProxySettings(button = null) {
+  const body = readCoreProxySettings();
+  const enabled = Object.values(body.inbounds).filter((item) => item.enabled);
+  if (!enabled.length && !body.tun.enabled) {
+    toast("至少启用一种 Mihomo 代理入口", "error");
+    return;
+  }
+  const result = await postJson("/api/mihomo/proxy-settings", body, "proxy", button);
+  if (!result?.ok) return;
+  state.mihomoProxySettings = null;
+  await loadCoreProxySettings(true);
+  await refreshStatus();
+}
+
+function writeCoreProxySummary(data) {
+  const enabled = [];
+  for (const [name, fields] of Object.entries(inboundFieldMap)) {
+    const inbound = data.inbounds?.[name];
+    if (inbound?.enabled) enabled.push(`${fields.label}:${inbound.port}`);
+  }
+  if (data.tun?.enabled) enabled.push(`TUN:${data.tun.stack || "system"}`);
+  document.querySelector("#coreProxySummary").textContent = enabled.length
+    ? `${data.mode || "Rule"} · ${enabled.join(" · ")}`
+    : `${data.mode || "Rule"} · 未启用入口`;
 }
 
 async function refreshStatus() {
@@ -886,15 +1007,13 @@ function updateMetrics(text) {
   const timer = extractLine(text, ["订阅定时更新：", "Subscription timer: "]);
   const shellProxy = extractLine(text, ["系统 shell 代理：", "System shell proxy: "]);
   const aptProxy = extractLine(text, ["APT 代理：", "APT proxy: "]);
-  const proxychains = extractLine(text, ["Proxychains 配置：", "Proxychains config: "]);
+  const hasCoreListener = /LISTEN\s+.*(?:mihomo|:9090)/i.test(text);
 
   document.querySelector("#serviceMetric").textContent = compact(service);
   document.querySelector("#timerMetric").textContent = compact(timer);
   document.querySelector("#systemProxyMetric").textContent =
     [shellProxy, aptProxy].some((line) => /已启用|enabled/i.test(line)) ? "已启用" : "未启用";
-  document.querySelector("#proxychainsMetric").textContent = proxychains && !/missing|缺失/i.test(proxychains)
-    ? "已配置"
-    : "未配置";
+  document.querySelector("#proxychainsMetric").textContent = hasCoreListener ? "已监听" : "未监听";
 }
 
 function extractLine(text, prefixes) {
@@ -923,6 +1042,9 @@ function setBusy(busy) {
   document.querySelectorAll("button, input, select, textarea").forEach((element) => {
     element.disabled = busy;
   });
+  if (document.querySelector("#coreProxyForm")) {
+    updateInboundPortStates();
+  }
 }
 
 function setButtonLoading(button, loading) {
