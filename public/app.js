@@ -4,6 +4,9 @@ const state = {
   proxyData: null,
   selectedProxyGroup: "",
   proxyDelays: {},
+  testingDelays: false,
+  proxyProgressText: "",
+  subscriptionSettings: null,
 };
 
 const titles = {
@@ -78,29 +81,33 @@ document.body.addEventListener("click", async (event) => {
   }
 });
 
-document.querySelector("#urlForm").addEventListener("submit", async (event) => {
+document.querySelector("#subscriptionForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const input = document.querySelector("#subscriptionUrl");
-  const value = input.value.trim();
-  if (!value) {
-    toast("请输入订阅链接");
-    return;
-  }
-  await postJson("/api/subscription/url", { url: value }, "subscription");
-  input.value = "";
-  await refreshStatus();
+  await saveSubscriptionSettings(false);
 });
 
-document.querySelector("#uaForm").addEventListener("submit", async (event) => {
+document.querySelector("#saveAndUpdateSubscriptionBtn").addEventListener("click", async () => {
+  await saveSubscriptionSettings(true);
+});
+
+document.querySelector("#ruleForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const input = document.querySelector("#subscriptionUa");
-  const value = input.value.trim();
-  if (!value) {
-    toast("请输入 User-Agent");
+  const type = document.querySelector("#ruleType").value.trim();
+  const payload = document.querySelector("#rulePayload").value.trim();
+  const policy = document.querySelector("#rulePolicy").value.trim();
+  if (type !== "MATCH" && !payload) {
+    toast("请输入规则内容");
     return;
   }
-  await postJson("/api/subscription/ua", { ua: value }, "subscription");
-  await refreshStatus();
+  if (!policy) {
+    toast("请选择代理策略");
+    return;
+  }
+  const result = await postJson("/api/rules", { type, payload, policy }, "rules");
+  if (result?.ok) {
+    document.querySelector("#rulePayload").value = "";
+    await loadRules();
+  }
 });
 
 document.querySelector("#loadLogsBtn").addEventListener("click", async () => {
@@ -127,6 +134,7 @@ document.querySelector("#proxyNodes").addEventListener("click", async (event) =>
 });
 
 await loadConfig();
+await loadSubscriptionSettings();
 await refreshStatus();
 
 function setView(view) {
@@ -141,6 +149,9 @@ function setView(view) {
   if (view === "proxies" && !state.proxyData) {
     loadProxies();
   }
+  if (view === "rules") {
+    loadRulePolicies();
+  }
 }
 
 async function loadConfig() {
@@ -150,11 +161,67 @@ async function loadConfig() {
     setConnection(false, payload.error || "连接配置读取失败");
     return;
   }
-  const { host, port, user, mode } = payload.data;
-  document.querySelector("#serverLabel").textContent = `${user}@${host}:${port}`;
-  document.querySelector("#configHost").textContent = `${host}:${port}`;
-  document.querySelector("#configUser").textContent = user;
-  document.querySelector("#configScript").textContent = mode;
+  const { host, port, user, mode, auth } = payload.data;
+  const localMode = mode === "local";
+  document.querySelector("#serverLabel").textContent = localMode ? "本地管理" : `${user}@${host}:${port}`;
+  document.querySelector("#configHost").textContent = localMode ? "本机环境" : `${host}:${port}`;
+  document.querySelector("#configUser").textContent = localMode ? "当前进程" : user;
+  document.querySelector("#configScript").textContent = localMode ? "local" : `remote-ssh-${auth || "key"}`;
+}
+
+async function loadSubscriptionSettings() {
+  try {
+    const response = await fetch("/api/subscription/settings");
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || payload.stderr || "订阅设置读取失败");
+    state.subscriptionSettings = payload.data;
+    document.querySelector("#subscriptionName").value = payload.data.name || "默认订阅";
+    document.querySelector("#subscriptionDescription").value = payload.data.description || "";
+    document.querySelector("#subscriptionUa").value = payload.data.ua && payload.data.ua !== "User-Agent"
+      ? payload.data.ua
+      : "";
+    document.querySelector("#subscriptionAutoUpdate").checked = Boolean(payload.data.autoUpdate);
+    document.querySelector("#subscriptionSystemProxy").checked = Boolean(payload.data.systemProxy);
+    document.querySelector("#subscriptionKernelUpdate").checked = Boolean(payload.data.kernelUpdate);
+    writeSubscriptionSummary(payload.data);
+  } catch (error) {
+    writeOutput("subscription", error.message);
+  }
+}
+
+async function saveSubscriptionSettings(updateAfterSave) {
+  const body = {
+    name: document.querySelector("#subscriptionName").value.trim(),
+    description: document.querySelector("#subscriptionDescription").value.trim(),
+    url: document.querySelector("#subscriptionUrl").value.trim(),
+    ua: document.querySelector("#subscriptionUa").value.trim(),
+    autoUpdate: document.querySelector("#subscriptionAutoUpdate").checked,
+    systemProxy: document.querySelector("#subscriptionSystemProxy").checked,
+    kernelUpdate: document.querySelector("#subscriptionKernelUpdate").checked,
+  };
+  const result = await postJson("/api/subscription/settings", body, "subscription");
+  if (!result?.ok) return;
+  document.querySelector("#subscriptionUrl").value = "";
+  await loadSubscriptionSettings();
+  await refreshStatus();
+  if (updateAfterSave) {
+    await runAction("update");
+  }
+}
+
+function writeSubscriptionSummary(data) {
+  const output = outputTargets.subscription;
+  const rows = [
+    ["订阅名称", data.name || "默认订阅"],
+    ["订阅描述", data.description || "无"],
+    ["当前链接", data.maskedUrl || "未设置"],
+    ["User-Agent", data.ua || "User-Agent"],
+    ["允许自动更新", data.autoUpdate ? "已启用" : "未启用"],
+    ["使用系统代理更新", data.systemProxy ? "已启用" : "未启用"],
+    ["使用内核更新", data.kernelUpdate ? "已启用" : "未启用"],
+    ["定时器", data.timer || "--"],
+  ];
+  output.textContent = rows.map(([label, value]) => `${label}：${value}`).join("\n");
 }
 
 async function refreshStatus() {
@@ -252,6 +319,7 @@ async function loadProxies(force = false) {
       state.selectedProxyGroup = preferred?.name || "";
     }
     renderProxies();
+    populateRulePolicyOptions();
     toast("代理组已刷新");
   } catch (error) {
     document.querySelector("#proxyGroups").textContent = error.message;
@@ -295,13 +363,15 @@ function renderProxies() {
   const group = groups.find((item) => item.name === state.selectedProxyGroup);
   document.querySelector("#proxyGroupTitle").textContent = group?.name || "节点";
   document.querySelector("#proxyGroupMeta").textContent = group
-    ? `${group.type || "Group"} · 当前：${group.now || "--"}`
+    ? state.proxyProgressText || `${group.type || "Group"} · 当前：${group.now || "--"}`
     : "选择一个代理组查看节点";
 
   for (const option of group?.options || []) {
     const node = state.proxyData.nodes[option] || { name: option, type: "Group" };
-    const delay = state.proxyDelays[option] ?? node.delay;
+    const hasMeasuredDelay = Object.prototype.hasOwnProperty.call(state.proxyDelays, option);
+    const delay = hasMeasuredDelay ? state.proxyDelays[option] : node.delay;
     const active = option === group.now;
+    const delayState = delay === "testing" ? "pending" : delay ? "ok" : hasMeasuredDelay ? "fail" : "";
     const card = document.createElement("button");
     card.className = `node-card${active ? " active" : ""}`;
     card.type = "button";
@@ -310,10 +380,11 @@ function renderProxies() {
     card.innerHTML = `
       <span class="node-title">${escapeHtml(option)}</span>
       <span class="node-meta">${escapeHtml(node.type || "Node")}</span>
-      <span class="node-delay ${delay ? "ok" : ""}">${formatDelay(delay)}</span>
+      <span class="node-delay ${delayState}">${formatDelay(delay)}</span>
     `;
     nodesContainer.appendChild(card);
   }
+  document.querySelector("#delayGroupBtn").disabled = state.busy || state.testingDelays;
 }
 
 async function selectProxyNode(group, name) {
@@ -346,24 +417,41 @@ async function testSelectedGroupDelays() {
     toast("当前代理组没有可测速节点");
     return;
   }
-  setBusy(true);
-  document.querySelector("#proxyGroupMeta").textContent = `正在测试 ${names.length} 个节点...`;
+  state.testingDelays = true;
+  let okCount = 0;
+  let doneCount = 0;
+  renderProxies();
   try {
-    const response = await fetch("/api/proxies/delays", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ names }),
-    });
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error || payload.stderr || "测速失败");
-    state.proxyDelays = { ...state.proxyDelays, ...payload.data.delays };
-    renderProxies();
-    toast("测速完成");
+    for (const name of names) {
+      state.proxyDelays[name] = "testing";
+      state.proxyProgressText = `正在测试 ${doneCount + 1}/${names.length}：${name}`;
+      renderProxies();
+      const delay = await testProxyDelay(name);
+      state.proxyDelays[name] = delay;
+      if (delay) okCount += 1;
+      doneCount += 1;
+      state.proxyProgressText = `已测试 ${doneCount}/${names.length}，可用 ${okCount}`;
+      renderProxies();
+    }
+    toast(`测速完成：${okCount}/${names.length} 可用`);
   } catch (error) {
     toast(error.message);
   } finally {
-    setBusy(false);
+    state.testingDelays = false;
+    state.proxyProgressText = "";
+    renderProxies();
   }
+}
+
+async function testProxyDelay(name) {
+  const response = await fetch("/api/proxies/delays", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ names: [name] }),
+  });
+  const payload = await response.json();
+  if (!payload.ok) throw new Error(payload.error || payload.stderr || "测速失败");
+  return payload.data.delays[name] || null;
 }
 
 async function loadRules() {
@@ -411,7 +499,49 @@ function renderRules(data) {
   }
 }
 
+async function loadRulePolicies() {
+  if (!state.proxyData) {
+    try {
+      const response = await fetch("/api/proxies");
+      const payload = await response.json();
+      if (payload.ok) {
+        state.proxyData = payload.data;
+      }
+    } catch {
+      // Keep the built-in DIRECT/REJECT policies if the controller is unavailable.
+    }
+  }
+  populateRulePolicyOptions();
+}
+
+function populateRulePolicyOptions() {
+  const select = document.querySelector("#rulePolicy");
+  if (!select) return;
+  const current = select.value;
+  const names = ["DIRECT", "REJECT"];
+  for (const group of state.proxyData?.groups || []) {
+    if (!names.includes(group.name)) names.push(group.name);
+  }
+  select.innerHTML = "";
+  for (const name of names) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
+  }
+  if (names.includes(current)) {
+    select.value = current;
+  }
+}
+
 function writeResult(target, payload) {
+  if (target === "dashboard" && payload.stdout) {
+    renderStatusDetails(payload.stdout);
+    if (payload.stderr || payload.error) {
+      toast(payload.stderr || payload.error);
+    }
+    return;
+  }
   const lines = [];
   if (payload.stdout) lines.push(payload.stdout.trimEnd());
   if (payload.stderr) lines.push(payload.stderr.trimEnd());
@@ -422,12 +552,59 @@ function writeResult(target, payload) {
   writeOutput(target, lines.join("\n\n"));
 }
 
+function renderStatusDetails(text) {
+  const output = outputTargets.dashboard;
+  const details = parseStatusDetails(text);
+  output.innerHTML = "";
+  if (!details.length) {
+    output.textContent = text || "暂无状态数据。";
+    return;
+  }
+  for (const item of details) {
+    const row = document.createElement("div");
+    row.className = "status-row";
+    row.innerHTML = `
+      <span class="status-label">${escapeHtml(item.label)}</span>
+      <span class="status-value">${escapeHtml(item.value)}</span>
+    `;
+    output.appendChild(row);
+  }
+}
+
+function parseStatusDetails(text) {
+  const rows = [];
+  const portLines = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^LISTEN\b/.test(trimmed)) {
+      portLines.push(trimmed.replace(/\s+/g, " "));
+      continue;
+    }
+    const match = trimmed.match(/^([^:：]+)[：:]\s*(.*)$/);
+    if (!match) continue;
+    const label = match[1].trim();
+    const value = match[2].trim();
+    if (label === "监听端口" || label === "Listening ports") continue;
+    rows.push({ label, value: value || "--" });
+  }
+  if (portLines.length) {
+    rows.push({ label: "监听端口", value: portLines.join("\n") });
+  }
+  return rows;
+}
+
 function writeOutput(target, text) {
   const output = outputTargets[target] || outputTargets[state.activeView] || outputTargets.dashboard;
+  if (target === "dashboard") {
+    output.innerHTML = "";
+  }
   output.textContent = text;
 }
 
 function formatDelay(delay) {
+  if (delay === "testing") return "测试中";
+  if (delay === null) return "超时";
   if (!delay) return "--";
   return `${Math.round(delay)} ms`;
 }
@@ -480,7 +657,7 @@ function setConnection(ok, label) {
 
 function setBusy(busy) {
   state.busy = busy;
-  document.querySelectorAll("button, input, select").forEach((element) => {
+  document.querySelectorAll("button, input, select, textarea").forEach((element) => {
     element.disabled = busy;
   });
 }

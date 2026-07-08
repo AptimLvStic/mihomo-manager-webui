@@ -62,17 +62,46 @@ function loadConfig() {
   const fileConfig = existsSync(join(rootDir, "server.config.json"))
     ? JSON.parse(readFileSync(join(rootDir, "server.config.json"), "utf8"))
     : {};
+  const configuredMode = String(
+    process.env.MIHOMO_MODE || fileConfig.mode || (process.env.MIHOMO_HOST || fileConfig.host ? "remote" : "local"),
+  ).toLowerCase();
+  if (!["local", "remote"].includes(configuredMode)) {
+    throw new Error("MIHOMO_MODE must be local or remote.");
+  }
+  if (configuredMode === "local") {
+    return {
+      mode: "local",
+      host: "localhost",
+      port: null,
+      user: process.env.USER || process.env.USERNAME || "local",
+      auth: "none",
+    };
+  }
+  const identityFile = process.env.MIHOMO_KEY || fileConfig.identityFile || "";
+  const password = process.env.MIHOMO_PASSWORD || fileConfig.password || "";
+  const auth = String(
+    process.env.MIHOMO_AUTH || fileConfig.auth || (password && !identityFile ? "password" : "key"),
+  ).toLowerCase();
+  if (!["key", "password"].includes(auth)) {
+    throw new Error("MIHOMO_AUTH must be key or password.");
+  }
   const merged = {
+    mode: "remote",
     host: process.env.MIHOMO_HOST || fileConfig.host,
     port: Number(process.env.MIHOMO_SSH_PORT || fileConfig.port || 22),
     user: process.env.MIHOMO_USER || fileConfig.user || "root",
-    identityFile: process.env.MIHOMO_KEY || fileConfig.identityFile,
+    auth,
+    identityFile,
+    password,
   };
   if (!merged.host) {
     throw new Error("Missing server host. Create server.config.json or set MIHOMO_HOST.");
   }
-  if (!merged.identityFile) {
+  if (merged.auth === "key" && !merged.identityFile) {
     throw new Error("Missing SSH identity file. Create server.config.json or set MIHOMO_KEY.");
+  }
+  if (merged.auth === "password" && !merged.password) {
+    throw new Error("Missing SSH password. Set MIHOMO_PASSWORD or configure password in server.config.json.");
   }
   return merged;
 }
@@ -86,7 +115,8 @@ async function handleApi(req, res) {
         host: config.host,
         port: config.port,
         user: config.user,
-        mode: "direct-ssh",
+        mode: config.mode,
+        auth: config.auth,
       },
     });
     return;
@@ -151,6 +181,20 @@ async function handleApi(req, res) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/rules") {
+    const body = await readBody(req);
+    const ruleType = String(body.type || "").trim();
+    const payload = String(body.payload || "").trim();
+    const policy = String(body.policy || "").trim();
+    if (!ruleType || !policy) {
+      sendJson(res, 400, { ok: false, error: "Rule type and policy are required." });
+      return;
+    }
+    const result = await runRemoteScript(addRuleScript({ type: ruleType, payload, policy }), 120_000);
+    sendJson(res, result.code === 0 ? 200 : 500, result);
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/action") {
     const body = await readBody(req);
     const action = String(body.action || "");
@@ -160,6 +204,32 @@ async function handleApi(req, res) {
       return;
     }
     const result = await handler();
+    sendJson(res, result.code === 0 ? 200 : 500, result);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/subscription/settings") {
+    const result = await runRemoteScript(subscriptionSettingsScript(), 60_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/subscription/settings") {
+    const body = await readBody(req);
+    const nextUrl = String(body.url || "").trim();
+    if (nextUrl && !/^https?:\/\//i.test(nextUrl)) {
+      sendJson(res, 400, { ok: false, error: "Subscription URL must start with http:// or https://." });
+      return;
+    }
+    const result = await runRemoteScript(setSubscriptionSettingsScript({
+      name: String(body.name || "").trim(),
+      description: String(body.description || "").trim(),
+      url: nextUrl,
+      ua: String(body.ua || "").trim(),
+      autoUpdate: Boolean(body.autoUpdate),
+      systemProxy: Boolean(body.systemProxy),
+      kernelUpdate: Boolean(body.kernelUpdate),
+    }), 120_000);
     sendJson(res, result.code === 0 ? 200 : 500, result);
     return;
   }
@@ -231,7 +301,7 @@ PROXYCHAINS_LEGACY=/etc/proxychains.conf
 HTTP_PROXY_URL=http://127.0.0.1:7890
 SOCKS_PROXY_URL=socks5h://127.0.0.1:7891
 NO_PROXY_LIST=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-DEFAULT_UA=ClashMetaForAndroid/2.10.1
+DEFAULT_UA=User-Agent
 WEBUI_LANG=zh
 
 if [ -r "$WEBUI_ENV_FILE" ]; then
@@ -254,13 +324,24 @@ mihomo_bin() {
 
 load_subscription_env() {
   SUBSCRIPTION_URL=
+  SUBSCRIPTION_NAME=默认订阅
+  SUBSCRIPTION_DESCRIPTION=
   SUBSCRIPTION_UA=$DEFAULT_UA
+  SUBSCRIPTION_ALLOW_AUTO_UPDATE=1
+  SUBSCRIPTION_USE_SYSTEM_PROXY=0
+  SUBSCRIPTION_USE_KERNEL_UPDATE=0
   if [ -r "$ENV_FILE" ]; then
     . "$ENV_FILE"
+  fi
+  if [ -z "$SUBSCRIPTION_NAME" ]; then
+    SUBSCRIPTION_NAME=默认订阅
   fi
   if [ -z "$SUBSCRIPTION_UA" ]; then
     SUBSCRIPTION_UA=$DEFAULT_UA
   fi
+  case "$SUBSCRIPTION_ALLOW_AUTO_UPDATE" in 1|true|yes|on) SUBSCRIPTION_ALLOW_AUTO_UPDATE=1 ;; *) SUBSCRIPTION_ALLOW_AUTO_UPDATE=0 ;; esac
+  case "$SUBSCRIPTION_USE_SYSTEM_PROXY" in 1|true|yes|on) SUBSCRIPTION_USE_SYSTEM_PROXY=1 ;; *) SUBSCRIPTION_USE_SYSTEM_PROXY=0 ;; esac
+  case "$SUBSCRIPTION_USE_KERNEL_UPDATE" in 1|true|yes|on) SUBSCRIPTION_USE_KERNEL_UPDATE=1 ;; *) SUBSCRIPTION_USE_KERNEL_UPDATE=0 ;; esac
 }
 
 quote_sh() {
@@ -272,14 +353,26 @@ quote_sh() {
 write_subscription_env() {
   url_value=$1
   ua_value=$2
+  name_value=\${3:-默认订阅}
+  description_value=\${4:-}
+  auto_update_value=\${5:-1}
+  system_proxy_value=\${6:-0}
+  kernel_update_value=\${7:-0}
   install -d -m 700 "$CONFIG_DIR"
   tmp_file=$(mktemp)
   {
     printf '# Managed by mihomo-manager-webui. Keep this file root-only.\n'
     printf 'SUBSCRIPTION_URL='
     quote_sh "$url_value"
+    printf '\nSUBSCRIPTION_NAME='
+    quote_sh "$name_value"
+    printf '\nSUBSCRIPTION_DESCRIPTION='
+    quote_sh "$description_value"
     printf '\nSUBSCRIPTION_UA='
     quote_sh "$ua_value"
+    printf '\nSUBSCRIPTION_ALLOW_AUTO_UPDATE=%s' "$auto_update_value"
+    printf '\nSUBSCRIPTION_USE_SYSTEM_PROXY=%s' "$system_proxy_value"
+    printf '\nSUBSCRIPTION_USE_KERNEL_UPDATE=%s' "$kernel_update_value"
     printf '\n'
   } > "$tmp_file"
   install -m 600 "$tmp_file" "$ENV_FILE"
@@ -338,9 +431,14 @@ if [ "$WEBUI_LANG" = zh ]; then
   printf 'Mihomo 服务：%s\n' "$active"
   printf 'Mihomo 开机自启：%s\n' "$enabled"
   printf '订阅定时更新：%s\n' "$timer"
+  printf '订阅名称：%s\n' "$SUBSCRIPTION_NAME"
+  printf '订阅描述：%s\n' "\${SUBSCRIPTION_DESCRIPTION:-无}"
   printf '订阅链接：'
   mask_url "$SUBSCRIPTION_URL"
   printf '订阅 UA：%s\n' "$SUBSCRIPTION_UA"
+  printf '允许自动更新：%s\n' "$SUBSCRIPTION_ALLOW_AUTO_UPDATE"
+  printf '使用系统代理更新：%s\n' "$SUBSCRIPTION_USE_SYSTEM_PROXY"
+  printf '使用内核更新：%s\n' "$SUBSCRIPTION_USE_KERNEL_UPDATE"
   printf 'Mihomo 程序：%s\n' "$bin_path"
   printf '监听端口：\n'
 else
@@ -349,9 +447,14 @@ else
   printf 'Mihomo service: %s\n' "$active"
   printf 'Mihomo enabled: %s\n' "$enabled"
   printf 'Subscription timer: %s\n' "$timer"
+  printf 'Subscription name: %s\n' "$SUBSCRIPTION_NAME"
+  printf 'Subscription description: %s\n' "\${SUBSCRIPTION_DESCRIPTION:-none}"
   printf 'Subscription URL: '
   mask_url "$SUBSCRIPTION_URL"
   printf 'Subscription UA: %s\n' "$SUBSCRIPTION_UA"
+  printf 'Allow automatic updates: %s\n' "$SUBSCRIPTION_ALLOW_AUTO_UPDATE"
+  printf 'Use system proxy for updates: %s\n' "$SUBSCRIPTION_USE_SYSTEM_PROXY"
+  printf 'Use kernel reload for updates: %s\n' "$SUBSCRIPTION_USE_KERNEL_UPDATE"
   printf 'Mihomo binary: %s\n' "$bin_path"
   printf 'Listening ports:\n'
 fi
@@ -519,6 +622,149 @@ function showUrlScript() {
   return `${remoteBase()}
 load_subscription_env
 mask_url "$SUBSCRIPTION_URL"
+`;
+}
+
+function subscriptionSettingsScript() {
+  return `${remoteBase()}
+load_subscription_env
+masked_url=$(mask_url "$SUBSCRIPTION_URL")
+timer_state=$(systemctl is-enabled mihomo-subscription.timer 2>/dev/null || true)
+export SUBSCRIPTION_NAME SUBSCRIPTION_DESCRIPTION SUBSCRIPTION_UA SUBSCRIPTION_ALLOW_AUTO_UPDATE
+export SUBSCRIPTION_USE_SYSTEM_PROXY SUBSCRIPTION_USE_KERNEL_UPDATE masked_url timer_state
+python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({
+    "name": os.environ.get("SUBSCRIPTION_NAME", ""),
+    "description": os.environ.get("SUBSCRIPTION_DESCRIPTION", ""),
+    "ua": os.environ.get("SUBSCRIPTION_UA", "User-Agent") or "User-Agent",
+    "maskedUrl": os.environ.get("masked_url", ""),
+    "autoUpdate": os.environ.get("SUBSCRIPTION_ALLOW_AUTO_UPDATE") == "1",
+    "systemProxy": os.environ.get("SUBSCRIPTION_USE_SYSTEM_PROXY") == "1",
+    "kernelUpdate": os.environ.get("SUBSCRIPTION_USE_KERNEL_UPDATE") == "1",
+    "timer": os.environ.get("timer_state", ""),
+}, ensure_ascii=False))
+PY
+`;
+}
+
+function setSubscriptionSettingsScript(settings) {
+  const encoded = {
+    name: Buffer.from(settings.name || "", "utf8").toString("base64"),
+    description: Buffer.from(settings.description || "", "utf8").toString("base64"),
+    url: Buffer.from(settings.url || "", "utf8").toString("base64"),
+    ua: Buffer.from(settings.ua || "", "utf8").toString("base64"),
+  };
+  const autoUpdate = settings.autoUpdate ? "1" : "0";
+  const systemProxy = settings.systemProxy ? "1" : "0";
+  const kernelUpdate = settings.kernelUpdate ? "1" : "0";
+  return `${remoteBase()}
+load_subscription_env
+new_name=$(printf '%s' ${shellQuote(encoded.name)} | base64 -d)
+new_description=$(printf '%s' ${shellQuote(encoded.description)} | base64 -d)
+new_url=$(printf '%s' ${shellQuote(encoded.url)} | base64 -d)
+new_ua=$(printf '%s' ${shellQuote(encoded.ua)} | base64 -d)
+if [ -n "$new_url" ]; then
+  case "$new_url" in
+    http://*|https://*) SUBSCRIPTION_URL=$new_url ;;
+    *) printf '[ERROR] Subscription URL must start with http:// or https://.\n' >&2; exit 1 ;;
+  esac
+fi
+if [ -z "$new_name" ]; then
+  new_name=默认订阅
+fi
+if [ -z "$new_ua" ]; then
+  new_ua=$DEFAULT_UA
+fi
+write_subscription_env "$SUBSCRIPTION_URL" "$new_ua" "$new_name" "$new_description" ${shellQuote(autoUpdate)} ${shellQuote(systemProxy)} ${shellQuote(kernelUpdate)}
+if systemctl list-unit-files mihomo-subscription.timer --no-legend 2>/dev/null | grep -q '^mihomo-subscription\\.timer'; then
+  if [ ${shellQuote(autoUpdate)} = 1 ]; then
+    systemctl enable --now mihomo-subscription.timer >/dev/null
+  else
+    systemctl disable --now mihomo-subscription.timer >/dev/null || true
+  fi
+else
+  if [ "$WEBUI_LANG" = zh ]; then printf '[警告] 未找到 mihomo-subscription.timer，仅保存自动更新偏好。\n'; else printf '[WARN] mihomo-subscription.timer not found; only saved the auto-update preference.\n'; fi
+fi
+if [ "$WEBUI_LANG" = zh ]; then
+  printf '[信息] 订阅设置已保存。\n'
+else
+  printf '[INFO] Subscription settings saved.\n'
+fi
+`;
+}
+
+function addRuleScript(rule) {
+  const encoded = Buffer.from(JSON.stringify(rule), "utf8").toString("base64");
+  return `${remoteBase()}
+payload=${shellQuote(encoded)}
+tmp_file=$(python3 - "$payload" "$CONFIG_FILE" <<'PY'
+import base64
+import json
+import re
+import sys
+from pathlib import Path
+
+data = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+config = Path(sys.argv[2])
+rule_type = str(data.get("type", "")).strip().upper()
+payload = str(data.get("payload", "")).strip()
+policy = str(data.get("policy", "")).strip()
+
+if not re.fullmatch(r"[A-Z0-9_-]{2,40}", rule_type):
+    raise SystemExit("invalid rule type")
+for value, label in ((payload, "rule payload"), (policy, "policy")):
+    if "\n" in value or "\r" in value:
+        raise SystemExit(f"invalid {label}")
+if not policy:
+    raise SystemExit("policy is required")
+if rule_type != "MATCH" and not payload:
+    raise SystemExit("rule payload is required")
+
+parts = [rule_type]
+if rule_type != "MATCH":
+    parts.append(payload)
+parts.append(policy)
+rule_value = ",".join(parts)
+rule_line = "- '" + rule_value.replace("'", "''") + "'"
+
+text = config.read_text(encoding="utf-8", errors="ignore") if config.exists() else ""
+lines = text.splitlines()
+insert_at = None
+for index, line in enumerate(lines):
+    if re.match(r"^rules\\s*:\\s*(?:#.*)?$", line):
+        insert_at = index + 1
+        break
+if insert_at is None:
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append("rules:")
+    insert_at = len(lines)
+lines.insert(insert_at, rule_line)
+tmp = config.with_suffix(config.suffix + ".rule.tmp")
+tmp.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+print(tmp)
+PY
+)
+bin_path=$(mihomo_bin) || { if [ "$WEBUI_LANG" = zh ]; then printf '[错误] 未找到 mihomo。\n' >&2; else printf '[ERROR] Mihomo binary not found.\n' >&2; fi; exit 1; }
+check_log=/tmp/mihomo-rule-check.log
+if "$bin_path" -t -d "$CONFIG_DIR" -f "$tmp_file" >"$check_log" 2>&1; then
+  if [ -f "$CONFIG_FILE" ]; then
+    cp -a "$CONFIG_FILE" "$CONFIG_FILE.backup.$(date +%Y%m%d%H%M%S)"
+  fi
+  install -m 600 "$tmp_file" "$CONFIG_FILE"
+  rm -f "$tmp_file"
+else
+  cat "$check_log" >&2
+  rm -f "$tmp_file"
+  exit 1
+fi
+if systemctl is-active --quiet mihomo.service 2>/dev/null; then
+  systemctl restart mihomo.service
+fi
+if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 规则已新增并通过校验。\n'; else printf '[INFO] Rule added and config validation passed.\n'; fi
 `;
 }
 
@@ -744,7 +990,11 @@ function updateFunctionBody() {
   raw_file=$tmp_dir/subscription.yaml
   cfg_file=$tmp_dir/config.yaml
   if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 正在拉取订阅...\n'; else printf '[INFO] Downloading subscription...\n'; fi
-  curl -fsSL --retry 3 --connect-timeout 15 --max-time 90 -H 'Accept: */*' -A "$SUBSCRIPTION_UA" "$SUBSCRIPTION_URL" -o "$raw_file"
+  curl_args=(-fsSL --retry 3 --connect-timeout 15 --max-time 90 -H 'Accept: */*' -A "$SUBSCRIPTION_UA")
+  if [ "$SUBSCRIPTION_USE_SYSTEM_PROXY" = 1 ]; then
+    curl_args+=(--proxy "$HTTP_PROXY_URL")
+  fi
+  curl "\${curl_args[@]}" "$SUBSCRIPTION_URL" -o "$raw_file"
   python3 - "$raw_file" "$cfg_file" <<'PY'
 import re
 import sys
@@ -787,10 +1037,34 @@ PY
     cat "$check_log" >&2
     exit 1
   fi
-  if systemctl is-active --quiet mihomo.service 2>/dev/null; then
-    systemctl restart mihomo.service
-  else
-    systemctl start mihomo.service
+  reloaded=0
+  if [ "$SUBSCRIPTION_USE_KERNEL_UPDATE" = 1 ] && systemctl is-active --quiet mihomo.service 2>/dev/null; then
+    if python3 - "$CONFIG_FILE" <<'PY'
+import json
+import sys
+import urllib.request
+
+body = json.dumps({"path": sys.argv[1], "force": True}).encode("utf-8")
+request = urllib.request.Request(
+    "http://127.0.0.1:9090/configs",
+    data=body,
+    method="PUT",
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(request, timeout=10) as resp:
+    resp.read()
+PY
+    then
+      reloaded=1
+      if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 已通过 Mihomo 内核热加载配置。\n'; else printf '[INFO] Mihomo config reloaded through the core controller.\n'; fi
+    fi
+  fi
+  if [ "$reloaded" != 1 ]; then
+    if systemctl is-active --quiet mihomo.service 2>/dev/null; then
+      systemctl restart mihomo.service
+    else
+      systemctl start mihomo.service
+    fi
   fi
   sleep 2
   if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 订阅更新完成。\n'; else printf '[INFO] Subscription update finished.\n'; fi
@@ -910,7 +1184,7 @@ case "$new_url" in
   *) printf '[ERROR] Subscription URL must start with http:// or https://.\n' >&2; exit 1 ;;
 esac
 load_subscription_env
-write_subscription_env "$new_url" "$SUBSCRIPTION_UA"
+write_subscription_env "$new_url" "$SUBSCRIPTION_UA" "$SUBSCRIPTION_NAME" "$SUBSCRIPTION_DESCRIPTION" "$SUBSCRIPTION_ALLOW_AUTO_UPDATE" "$SUBSCRIPTION_USE_SYSTEM_PROXY" "$SUBSCRIPTION_USE_KERNEL_UPDATE"
 if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 订阅链接已保存。\n'; else printf '[INFO] Subscription URL saved.\n'; fi
 update_subscription
 select_working_proxy || true
@@ -928,7 +1202,7 @@ if [ -z "$new_ua" ]; then
   exit 1
 fi
 load_subscription_env
-write_subscription_env "$SUBSCRIPTION_URL" "$new_ua"
+write_subscription_env "$SUBSCRIPTION_URL" "$new_ua" "$SUBSCRIPTION_NAME" "$SUBSCRIPTION_DESCRIPTION" "$SUBSCRIPTION_ALLOW_AUTO_UPDATE" "$SUBSCRIPTION_USE_SYSTEM_PROXY" "$SUBSCRIPTION_USE_KERNEL_UPDATE"
 if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 订阅 User-Agent 已保存。\n'; else printf '[INFO] Subscription User-Agent saved.\n'; fi
 update_subscription
 select_working_proxy || true
@@ -970,23 +1244,38 @@ systemctl is-active mihomo.service
 }
 
 function runRemoteScript(script, timeoutMs = 90_000) {
-  const sshArgs = [
-    "-i",
-    config.identityFile,
-    "-p",
-    String(config.port),
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "ConnectTimeout=10",
-    "-o",
-    "StrictHostKeyChecking=accept-new",
-    `${config.user}@${config.host}`,
-    "bash -s",
-  ];
+  if (config.mode === "local") {
+    return runScriptProcess("bash", ["-s"], script, timeoutMs);
+  }
 
+  const sshArgs = ["-p", String(config.port), "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new"];
+  let command = "ssh";
+  let args = sshArgs;
+  let env = process.env;
+
+  if (config.auth === "key") {
+    args = ["-i", config.identityFile, "-o", "BatchMode=yes", ...sshArgs];
+  } else {
+    command = "sshpass";
+    args = [
+      "-e",
+      "ssh",
+      "-o",
+      "PreferredAuthentications=password",
+      "-o",
+      "PubkeyAuthentication=no",
+      ...sshArgs,
+    ];
+    env = { ...process.env, SSHPASS: config.password };
+  }
+
+  args = [...args, `${config.user}@${config.host}`, "bash -s"];
+  return runScriptProcess(command, args, script, timeoutMs, env);
+}
+
+function runScriptProcess(command, args, script, timeoutMs, env = process.env) {
   return new Promise((resolveResult) => {
-    const child = spawn("ssh", sshArgs, { windowsHide: true });
+    const child = spawn(command, args, { windowsHide: true, env });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
@@ -1001,7 +1290,7 @@ function runRemoteScript(script, timeoutMs = 90_000) {
     });
     child.on("error", (error) => {
       clearTimeout(timer);
-      resolveResult({ ok: false, code: -1, stdout, stderr, error: error.message });
+      resolveResult({ ok: false, code: -1, stdout: scrub(stdout), stderr: scrub(stderr), error: error.message });
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
@@ -1025,7 +1314,7 @@ function shellQuote(value) {
 
 function scrub(text) {
   return String(text)
-    .replace(/((?:token|access_token|key|secret|password|passwd)=)[^&\s]+/gi, "$1***")
+    .replace(/((?:token|access_token|key|secret|password|passwd)=)[^&\s"',}]+/gi, "$1***")
     .replace(/ghp_[A-Za-z0-9_]+/g, "ghp_***");
 }
 

@@ -72,7 +72,7 @@
               <h2>状态总览</h2>
               <button class="ghost-button" data-run="status" type="button">重新读取</button>
             </div>
-            <pre class="terminal" id="statusOutput">等待读取状态...</pre>
+            <div class="status-list" id="statusOutput">等待读取状态...</div>
           </section>
         </section>
 
@@ -109,19 +109,41 @@
                 <h2>订阅管理</h2>
                 <button class="ghost-button" data-run="show-url" type="button">查看当前链接</button>
               </div>
-              <form class="stack" id="urlForm">
+              <form class="stack" id="subscriptionForm">
+                <label>
+                  <span>订阅名称</span>
+                  <input id="subscriptionName" autocomplete="off" placeholder="默认订阅" />
+                </label>
+                <label>
+                  <span>订阅描述</span>
+                  <textarea id="subscriptionDescription" autocomplete="off" rows="3" placeholder="可选描述"></textarea>
+                </label>
                 <label>
                   <span>新的订阅链接</span>
                   <input id="subscriptionUrl" autocomplete="off" placeholder="https://..." type="url" />
                 </label>
-                <button class="primary-button" type="submit">保存并更新</button>
-              </form>
-              <form class="stack" id="uaForm">
                 <label>
                   <span>User-Agent</span>
-                  <input id="subscriptionUa" autocomplete="off" placeholder="ClashMetaForAndroid/2.10.1" />
+                  <input id="subscriptionUa" autocomplete="off" placeholder="User-Agent" />
                 </label>
-                <button type="submit">保存 UA 并更新</button>
+                <div class="toggle-list">
+                  <label class="toggle-row">
+                    <input id="subscriptionAutoUpdate" type="checkbox" />
+                    <span>允许自动更新</span>
+                  </label>
+                  <label class="toggle-row">
+                    <input id="subscriptionSystemProxy" type="checkbox" />
+                    <span>使用系统代理更新</span>
+                  </label>
+                  <label class="toggle-row">
+                    <input id="subscriptionKernelUpdate" type="checkbox" />
+                    <span>使用内核更新</span>
+                  </label>
+                </div>
+                <div class="inline-controls">
+                  <button class="primary-button" id="saveSubscriptionBtn" type="submit">保存设置</button>
+                  <button id="saveAndUpdateSubscriptionBtn" type="button">保存并更新</button>
+                </div>
               </form>
             </section>
 
@@ -140,17 +162,53 @@
         </section>
 
         <section class="view" id="rules">
-          <section class="panel">
-            <div class="panel-heading">
-              <div>
-                <h2>规则</h2>
-                <p class="panel-subtitle" id="rulesSummary">查看 Mihomo 当前加载的规则</p>
+          <div class="split-layout rules-layout">
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>规则</h2>
+                  <p class="panel-subtitle" id="rulesSummary">查看 Mihomo 当前加载的规则</p>
+                </div>
+                <button class="primary-button" id="loadRulesBtn" type="button">读取规则</button>
               </div>
-              <button class="primary-button" id="loadRulesBtn" type="button">读取规则</button>
-            </div>
-            <div class="rule-stats" id="ruleStats"></div>
-            <div class="rule-list" id="ruleList">请选择读取规则。</div>
-          </section>
+              <div class="rule-stats" id="ruleStats"></div>
+              <div class="rule-list" id="ruleList">请选择读取规则。</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>新增规则</h2>
+              </div>
+              <form class="stack" id="ruleForm">
+                <label>
+                  <span>规则类型</span>
+                  <select id="ruleType">
+                    <option value="DOMAIN-SUFFIX">DOMAIN-SUFFIX</option>
+                    <option value="DOMAIN">DOMAIN</option>
+                    <option value="DOMAIN-KEYWORD">DOMAIN-KEYWORD</option>
+                    <option value="IP-CIDR">IP-CIDR</option>
+                    <option value="SRC-IP-CIDR">SRC-IP-CIDR</option>
+                    <option value="GEOIP">GEOIP</option>
+                    <option value="GEOSITE">GEOSITE</option>
+                    <option value="PROCESS-NAME">PROCESS-NAME</option>
+                    <option value="MATCH">MATCH</option>
+                  </select>
+                </label>
+                <label>
+                  <span>规则内容</span>
+                  <input id="rulePayload" autocomplete="off" placeholder="example.com / 192.168.0.0/16 / CN" />
+                </label>
+                <label>
+                  <span>代理策略</span>
+                  <select id="rulePolicy">
+                    <option value="DIRECT">DIRECT</option>
+                    <option value="REJECT">REJECT</option>
+                  </select>
+                </label>
+                <button class="primary-button" type="submit">新增规则</button>
+              </form>
+            </section>
+          </div>
         </section>
 
         <section class="view" id="service">

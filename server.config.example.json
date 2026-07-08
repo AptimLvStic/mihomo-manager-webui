@@ -1,6 +1,9 @@
 {
+  "mode": "remote",
+  "auth": "key",
   "host": "your-server-ip",
   "port": 22,
   "user": "root",
-  "identityFile": "C:\\Users\\you\\.ssh\\your_private_key"
+  "identityFile": "C:\\Users\\you\\.ssh\\your_private_key",
+  "password": ""
 }

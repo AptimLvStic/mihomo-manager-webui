@@ -9,13 +9,12 @@ services:
     environment:
       LISTEN_HOST: 0.0.0.0
       PORT: 5178
-      MIHOMO_HOST: ${MIHOMO_HOST}
+      MIHOMO_MODE: ${MIHOMO_MODE:-remote}
+      MIHOMO_AUTH: ${MIHOMO_AUTH:-key}
+      MIHOMO_HOST: ${MIHOMO_HOST:-}
       MIHOMO_SSH_PORT: ${MIHOMO_SSH_PORT:-22}
       MIHOMO_USER: ${MIHOMO_USER:-root}
+      MIHOMO_PASSWORD: ${MIHOMO_PASSWORD:-}
       MIHOMO_KEY_FILE: /run/secrets/mihomo_ssh_key
-    secrets:
-      - mihomo_ssh_key
-
-secrets:
-  mihomo_ssh_key:
-    file: ${MIHOMO_KEY_PATH}
+    volumes:
+      - ${MIHOMO_KEY_PATH:-./server.config.example.json}:/run/secrets/mihomo_ssh_key:ro
