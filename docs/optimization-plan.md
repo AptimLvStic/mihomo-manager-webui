@@ -68,6 +68,45 @@ sequenceDiagram
   - `Permission denied/publickey` → SSH 认证失败。
   - `127.0.0.1:9090/connection refused` → Mihomo controller 不可用。
 
+### P2：初始化连接配置
+
+目标：部署完成后无需先手写配置文件，用户直接在初始化界面选择本地管理或远端管理。
+
+交互流程：
+
+1. WebUI 启动时读取 `/api/config`。
+2. 如果返回 `setupRequired=true`，显示初始化界面并隐藏主控制台。
+3. 用户选择“本地管理”或“远端管理”。
+4. 远端管理下填写服务器地址、端口、用户，并选择 SSH 密钥或 SSH 密码。
+5. 点击“测试连接”调用 `POST /api/setup/test`。
+6. 点击“保存并进入”调用 `POST /api/setup/save`，后端先测试连接，成功后写入 `server.config.json`。
+7. 前端重新读取配置并进入主控制台。
+
+时序图：
+
+```mermaid
+sequenceDiagram
+  participant U as 用户
+  participant UI as 初始化界面
+  participant API as Node API
+  participant T as 本地/远端目标
+  U->>UI: 打开 WebUI
+  UI->>API: GET /api/config
+  API-->>UI: setupRequired=true
+  U->>UI: 选择 local/remote 并填写信息
+  U->>UI: 点击测试连接
+  UI->>API: POST /api/setup/test
+  API->>T: bash 或 SSH 测试
+  T-->>API: 测试结果
+  API-->>UI: stdout/stderr
+  U->>UI: 保存并进入
+  UI->>API: POST /api/setup/save
+  API->>T: 再次测试连接
+  API-->>UI: 保存成功
+  UI->>API: GET /api/config
+  UI-->>U: 进入主控制台
+```
+
 ## 2. UI 原型
 
 ### 仪表盘
@@ -200,7 +239,7 @@ public/types/api.ts
 
 ### P2：安全和首次使用体验
 
-- 登录/连接配置页前置。
+- 已完成：初始化连接配置页前置，支持本地/远端模式选择和连接测试。
 - SSH 密码/密钥表单和测试连接。
 - 敏感信息 AES-256 加密存储。
 - 显示/隐藏订阅链接开关。

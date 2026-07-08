@@ -7,7 +7,77 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <section class="setup-screen is-hidden" id="setupScreen">
+      <div class="setup-panel">
+        <div class="setup-heading">
+          <span class="brand-mark">M</span>
+          <div>
+            <p class="eyebrow">Initial Setup</p>
+            <h1>初始化 Mihomo Manager</h1>
+            <p>请选择本地管理或远端管理模式，测试通过后即可进入控制台。</p>
+          </div>
+        </div>
+
+        <form class="stack" id="setupForm">
+          <div class="mode-grid">
+            <label class="mode-card">
+              <input name="setupMode" type="radio" value="local" checked />
+              <span>
+                <strong>本地管理</strong>
+                <small>项目部署在被管理服务器上，不需要 SSH 密码或私钥。</small>
+              </span>
+            </label>
+            <label class="mode-card">
+              <input name="setupMode" type="radio" value="remote" />
+              <span>
+                <strong>远端管理</strong>
+                <small>通过 SSH 密钥或密码连接远程服务器进行管理。</small>
+              </span>
+            </label>
+          </div>
+
+          <div class="remote-fields is-hidden" id="remoteSetupFields">
+            <div class="form-grid">
+              <label>
+                <span>服务器地址</span>
+                <input id="setupHost" autocomplete="off" placeholder="1.2.3.4" />
+              </label>
+              <label>
+                <span>SSH 端口</span>
+                <input id="setupPort" inputmode="numeric" placeholder="22" value="22" />
+              </label>
+              <label>
+                <span>用户名</span>
+                <input id="setupUser" autocomplete="username" placeholder="root" value="root" />
+              </label>
+              <label>
+                <span>认证方式</span>
+                <select id="setupAuth">
+                  <option value="key">SSH 密钥</option>
+                  <option value="password">SSH 密码</option>
+                </select>
+              </label>
+            </div>
+            <label id="setupKeyField">
+              <span>私钥路径</span>
+              <input id="setupIdentityFile" autocomplete="off" placeholder="/root/.ssh/id_rsa 或 /run/secrets/mihomo_ssh_key" />
+            </label>
+            <label class="is-hidden" id="setupPasswordField">
+              <span>SSH 密码</span>
+              <input id="setupPassword" autocomplete="current-password" placeholder="SSH 密码" type="password" />
+            </label>
+          </div>
+
+          <div class="inline-controls">
+            <button class="ghost-button" id="testSetupBtn" type="button">测试连接</button>
+            <button class="primary-button" type="submit">保存并进入</button>
+          </div>
+          <pre class="setup-result" id="setupResult">等待初始化配置。</pre>
+        </form>
+      </div>
+    </section>
+
+    <div class="app-shell is-hidden" id="appShell">
       <aside class="sidebar" aria-label="Main navigation">
         <div class="brand">
           <span class="brand-mark">M</span>

@@ -1,6 +1,7 @@
 const state = {
   activeView: "dashboard",
   busy: false,
+  setupRequired: false,
   proxyData: null,
   selectedProxyGroup: "",
   proxyDelays: {},
@@ -54,6 +55,21 @@ const actionTarget = {
   "proxy-off": "proxy",
   proxychains: "proxy",
 };
+
+document.querySelector("#setupForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await saveSetup(event.submitter);
+});
+
+document.querySelector("#testSetupBtn").addEventListener("click", async (event) => {
+  await testSetup(event.currentTarget);
+});
+
+document.querySelectorAll("[name='setupMode']").forEach((element) => {
+  element.addEventListener("change", updateSetupVisibility);
+});
+
+document.querySelector("#setupAuth").addEventListener("change", updateSetupVisibility);
 
 document.querySelector("#navTabs").addEventListener("click", (event) => {
   const button = event.target.closest("[data-view]");
@@ -140,9 +156,14 @@ document.querySelector("#proxyNodes").addEventListener("click", async (event) =>
   await selectProxyNode(selectButton.dataset.proxyGroup, selectButton.dataset.proxySelect, selectButton);
 });
 
-await loadConfig();
-await loadSubscriptionSettings();
-await refreshStatus();
+const initialConfig = await loadConfig();
+if (initialConfig?.setupRequired) {
+  showSetup();
+} else {
+  showApp();
+  await loadSubscriptionSettings();
+  await refreshStatus();
+}
 
 function setView(view) {
   state.activeView = view;
@@ -165,14 +186,111 @@ async function loadConfig() {
   const payload = await requestJson("/api/config", { timeoutMs: 8_000 });
   if (!payload.ok) {
     setConnection(false, payload.error || "连接配置读取失败");
-    return;
+    return null;
   }
   const { host, port, user, mode, auth } = payload.data;
+  state.setupRequired = Boolean(payload.data.setupRequired);
+  if (state.setupRequired) {
+    return payload.data;
+  }
   const localMode = mode === "local";
   document.querySelector("#serverLabel").textContent = localMode ? "本地管理" : `${user}@${host}:${port}`;
   document.querySelector("#configHost").textContent = localMode ? "本机环境" : `${host}:${port}`;
   document.querySelector("#configUser").textContent = localMode ? "当前进程" : user;
   document.querySelector("#configScript").textContent = localMode ? "local" : `remote-ssh-${auth || "key"}`;
+  return payload.data;
+}
+
+function showSetup() {
+  document.querySelector("#setupScreen").classList.remove("is-hidden");
+  document.querySelector("#appShell").classList.add("is-hidden");
+  updateSetupVisibility();
+}
+
+function showApp() {
+  document.querySelector("#setupScreen").classList.add("is-hidden");
+  document.querySelector("#appShell").classList.remove("is-hidden");
+}
+
+function updateSetupVisibility() {
+  const mode = document.querySelector("[name='setupMode']:checked")?.value || "local";
+  const auth = document.querySelector("#setupAuth").value;
+  document.querySelector("#remoteSetupFields").classList.toggle("is-hidden", mode !== "remote");
+  document.querySelector("#setupKeyField").classList.toggle("is-hidden", mode !== "remote" || auth !== "key");
+  document.querySelector("#setupPasswordField").classList.toggle("is-hidden", mode !== "remote" || auth !== "password");
+}
+
+function readSetupConfig() {
+  const mode = document.querySelector("[name='setupMode']:checked")?.value || "local";
+  return {
+    mode,
+    auth: document.querySelector("#setupAuth").value,
+    host: document.querySelector("#setupHost").value.trim(),
+    port: document.querySelector("#setupPort").value.trim() || "22",
+    user: document.querySelector("#setupUser").value.trim() || "root",
+    identityFile: document.querySelector("#setupIdentityFile").value.trim(),
+    password: document.querySelector("#setupPassword").value,
+  };
+}
+
+async function testSetup(button = null) {
+  const output = document.querySelector("#setupResult");
+  setButtonLoading(button, true);
+  output.textContent = "正在测试连接...";
+  try {
+    const payload = await requestJson("/api/setup/test", {
+      method: "POST",
+      body: readSetupConfig(),
+      timeoutMs: 35_000,
+    });
+    writeSetupResult(payload);
+    notifyPayload(payload);
+    return payload;
+  } catch (error) {
+    output.textContent = error.message;
+    toast("连接测试失败", "error", error.message);
+    return null;
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+async function saveSetup(button = null) {
+  const output = document.querySelector("#setupResult");
+  setButtonLoading(button, true);
+  output.textContent = "正在测试并保存配置...";
+  try {
+    const payload = await requestJson("/api/setup/save", {
+      method: "POST",
+      body: readSetupConfig(),
+      timeoutMs: 35_000,
+    });
+    writeSetupResult(payload);
+    notifyPayload(payload);
+    if (payload.ok) {
+      const nextConfig = await loadConfig();
+      if (!nextConfig?.setupRequired) {
+        showApp();
+        await loadSubscriptionSettings();
+        await refreshStatus();
+      }
+    }
+    return payload;
+  } catch (error) {
+    output.textContent = error.message;
+    toast("初始化保存失败", "error", error.message);
+    return null;
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+function writeSetupResult(payload) {
+  const lines = [];
+  if (payload.stdout) lines.push(payload.stdout.trimEnd());
+  if (payload.stderr) lines.push(payload.stderr.trimEnd());
+  if (payload.error) lines.push(payload.error);
+  document.querySelector("#setupResult").textContent = lines.join("\n\n") || (payload.ok ? "完成。" : "失败。");
 }
 
 async function loadSubscriptionSettings() {
@@ -810,6 +928,7 @@ function setBusy(busy) {
 function setButtonLoading(button, loading) {
   if (!button) return;
   button.classList.toggle("loading", loading);
+  button.disabled = loading;
 }
 
 let toastTimer;
