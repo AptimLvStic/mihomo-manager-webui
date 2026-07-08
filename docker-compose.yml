@@ -14,7 +14,6 @@ services:
       LISTEN_HOST: 0.0.0.0
       PORT: 5178
       SERVER_CONFIG_FILE: /app/data/server.config.json
-      MIHOMO_MODE: ${MIHOMO_MODE:-}
       MIHOMO_AUTH: ${MIHOMO_AUTH:-}
       MIHOMO_HOST: ${MIHOMO_HOST:-}
       MIHOMO_SSH_PORT: ${MIHOMO_SSH_PORT:-22}

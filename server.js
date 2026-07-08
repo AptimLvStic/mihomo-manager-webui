@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, normalize, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { extname, join, normalize, resolve } from "node:path";
 
 const rootDir = resolve(".");
 const publicDir = join(rootDir, "public");
@@ -64,35 +64,6 @@ function loadConfig() {
   const fileConfig = hasFileConfig
     ? JSON.parse(readFileSync(configFile, "utf8"))
     : {};
-  const hasEnvConfig = Boolean(process.env.MIHOMO_MODE || process.env.MIHOMO_HOST || process.env.MIHOMO_KEY || process.env.MIHOMO_KEY_FILE || process.env.MIHOMO_PASSWORD);
-  if (!hasFileConfig && !hasEnvConfig) {
-    return {
-      configured: false,
-      setupRequired: true,
-      mode: "setup",
-      host: "",
-      port: 22,
-      user: "root",
-      auth: "key",
-    };
-  }
-  const configuredMode = String(
-    process.env.MIHOMO_MODE || fileConfig.mode || (process.env.MIHOMO_HOST || fileConfig.host ? "remote" : "local"),
-  ).toLowerCase();
-  if (!["local", "remote"].includes(configuredMode)) {
-    throw new Error("MIHOMO_MODE must be local or remote.");
-  }
-  if (configuredMode === "local") {
-    return {
-      configured: true,
-      setupRequired: false,
-      mode: "local",
-      host: "localhost",
-      port: null,
-      user: process.env.USER || process.env.USERNAME || "local",
-      auth: "none",
-    };
-  }
   const identityFile = process.env.MIHOMO_KEY || process.env.MIHOMO_KEY_FILE || fileConfig.identityFile || "";
   const password = process.env.MIHOMO_PASSWORD || fileConfig.password || "";
   const auth = String(
@@ -103,8 +74,6 @@ function loadConfig() {
   }
   const merged = {
     configured: true,
-    setupRequired: false,
-    mode: "remote",
     host: process.env.MIHOMO_HOST || fileConfig.host,
     port: Number(process.env.MIHOMO_SSH_PORT || fileConfig.port || 22),
     user: process.env.MIHOMO_USER || fileConfig.user || "root",
@@ -112,85 +81,16 @@ function loadConfig() {
     identityFile,
     password,
   };
-  if (!merged.host) {
-    throw new Error("Missing server host. Create server.config.json or set MIHOMO_HOST.");
+  if (!merged.host || merged.host === "your-server-ip") {
+    throw new Error("Missing target server host. Set MIHOMO_HOST or configure host in server.config.json.");
   }
   if (merged.auth === "key" && !merged.identityFile) {
-    throw new Error("Missing SSH identity file. Create server.config.json or set MIHOMO_KEY/MIHOMO_KEY_FILE.");
+    throw new Error("Missing SSH identity file. Set MIHOMO_KEY/MIHOMO_KEY_FILE or configure identityFile in server.config.json.");
   }
   if (merged.auth === "password" && !merged.password) {
     throw new Error("Missing SSH password. Set MIHOMO_PASSWORD or configure password in server.config.json.");
   }
   return merged;
-}
-
-function buildConfigFromSetup(body) {
-  const mode = String(body.mode || "").toLowerCase();
-  if (!["local", "remote"].includes(mode)) {
-    throw new Error("请选择本地管理或远端管理模式。");
-  }
-  if (mode === "local") {
-    return {
-      configured: true,
-      setupRequired: false,
-      mode: "local",
-      host: "localhost",
-      port: null,
-      user: process.env.USER || process.env.USERNAME || "local",
-      auth: "none",
-    };
-  }
-
-  const auth = String(body.auth || "key").toLowerCase();
-  if (!["key", "password"].includes(auth)) {
-    throw new Error("远端管理认证方式必须是 key 或 password。");
-  }
-  const host = String(body.host || "").trim();
-  const user = String(body.user || "root").trim();
-  const portValue = Number(body.port || 22);
-  const identityFile = String(body.identityFile || "").trim();
-  const password = String(body.password || "");
-  if (!host) throw new Error("请填写服务器地址。");
-  if (!user) throw new Error("请填写 SSH 用户名。");
-  if (!Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
-    throw new Error("SSH 端口必须是 1-65535 之间的整数。");
-  }
-  if (auth === "key" && !identityFile) {
-    throw new Error("请选择密钥认证时必须填写私钥路径。");
-  }
-  if (auth === "password" && !password) {
-    throw new Error("请选择密码认证时必须填写 SSH 密码。");
-  }
-  return {
-    configured: true,
-    setupRequired: false,
-    mode: "remote",
-    host,
-    port: portValue,
-    user,
-    auth,
-    identityFile,
-    password,
-  };
-}
-
-function configForStorage(nextConfig) {
-  if (nextConfig.mode === "local") {
-    return { mode: "local" };
-  }
-  const stored = {
-    mode: "remote",
-    auth: nextConfig.auth,
-    host: nextConfig.host,
-    port: nextConfig.port,
-    user: nextConfig.user,
-  };
-  if (nextConfig.auth === "key") {
-    stored.identityFile = nextConfig.identityFile;
-  } else {
-    stored.password = nextConfig.password;
-  }
-  return stored;
 }
 
 async function handleApi(req, res) {
@@ -202,50 +102,17 @@ async function handleApi(req, res) {
         host: config.host,
         port: config.port,
         user: config.user,
-        mode: config.mode,
         auth: config.auth,
         configured: config.configured,
-        setupRequired: config.setupRequired,
-      },
-    });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/setup/test") {
-    const body = await readBody(req);
-    const nextConfig = buildConfigFromSetup(body);
-    const result = await runRemoteScript(setupTestScript(), 30_000, nextConfig);
-    sendJson(res, result.code === 0 ? 200 : 500, result);
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/setup/save") {
-    const body = await readBody(req);
-    const nextConfig = buildConfigFromSetup(body);
-    const result = await runRemoteScript(setupTestScript(), 30_000, nextConfig);
-    if (result.code !== 0) {
-      sendJson(res, 500, result);
-      return;
-    }
-    mkdirSync(dirname(configFile), { recursive: true });
-    writeFileSync(configFile, `${JSON.stringify(configForStorage(nextConfig), null, 2)}\n`, { mode: 0o600 });
-    config = loadConfig();
-    sendJson(res, 200, {
-      ok: true,
-      stdout: "初始化配置已保存。",
-      data: {
-        mode: config.mode,
-        auth: config.auth,
-        host: config.host,
-        port: config.port,
-        user: config.user,
+        targetLabel: config.host ? `${config.host}:${config.port}` : "Mihomo Server",
+        runtimeLabel: config.auth === "password" ? "SSH 密码管理通道" : "SSH 密钥管理通道",
       },
     });
     return;
   }
 
   if (!config.configured) {
-    sendJson(res, 428, { ok: false, error: "Please finish initial setup first." });
+    sendJson(res, 503, { ok: false, error: "Mihomo Manager runtime is not configured." });
     return;
   }
 
@@ -1112,23 +979,6 @@ mask_url "$SUBSCRIPTION_URL"
 `;
 }
 
-function setupTestScript() {
-  return String.raw`set -euo pipefail
-printf '连接测试：OK\n'
-if command -v bash >/dev/null 2>&1; then
-  printf 'Bash：OK\n'
-fi
-if command -v systemctl >/dev/null 2>&1; then
-  printf 'systemd：OK\n'
-fi
-if command -v mihomo >/dev/null 2>&1 || [ -x /usr/local/bin/mihomo ]; then
-  printf 'Mihomo：OK\n'
-else
-  printf 'Mihomo：未找到，请确认已安装或稍后安装。\n'
-fi
-`;
-}
-
 function subscriptionSettingsScript() {
   return `${remoteBase()}
 load_subscription_env
@@ -1814,10 +1664,6 @@ function runRemoteScript(script, timeoutMs = 90_000, targetConfig = config) {
 }
 
 function buildScriptProcess(targetConfig = config) {
-  if (targetConfig.mode === "local") {
-    return { command: "bash", args: ["-s"], env: process.env };
-  }
-
   const knownHostsFile = process.env.SSH_KNOWN_HOSTS_FILE || "/tmp/mihomo_manager_known_hosts";
   const sshArgs = ["-p", String(targetConfig.port), "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + knownHostsFile];
   let command = "ssh";
