@@ -3,8 +3,11 @@ const state = {
   busy: false,
   setupRequired: false,
   proxyData: null,
-  selectedProxyGroup: "",
+  selectedProxyGroup: readClientPreference("selectedProxyGroup") || "",
   proxyDelays: {},
+  proxyLoading: false,
+  selectingProxyNodes: new Set(),
+  restoredProxySelections: false,
   testingDelays: false,
   testingDelayNodes: new Set(),
   proxyProgressText: "",
@@ -86,7 +89,7 @@ document.querySelector("#navTabs").addEventListener("click", (event) => {
   setView(button.dataset.view);
 });
 
-document.querySelector("#refreshBtn").addEventListener("click", () => refreshStatus());
+document.querySelector("#refreshBtn").addEventListener("click", (event) => refreshStatus(event.currentTarget));
 
 document.body.addEventListener("click", async (event) => {
   const runButton = event.target.closest("[data-run]");
@@ -158,7 +161,7 @@ document.querySelector("#loadLogsBtn").addEventListener("click", async () => {
   await fetchResult(`/api/logs?target=${encodeURIComponent(target)}&lines=${encodeURIComponent(lines)}`, "logs");
 });
 
-document.querySelector("#reloadProxiesBtn").addEventListener("click", () => loadProxies(true));
+document.querySelector("#reloadProxiesBtn").addEventListener("click", (event) => loadProxies(true, event.currentTarget));
 document.querySelector("#delayGroupBtn").addEventListener("click", () => testSelectedGroupDelays());
 document.querySelector("#loadRulesBtn").addEventListener("click", () => loadRules());
 
@@ -166,19 +169,29 @@ document.querySelector("#proxyGroups").addEventListener("click", (event) => {
   const button = event.target.closest("[data-proxy-group]");
   if (!button) return;
   state.selectedProxyGroup = button.dataset.proxyGroup;
+  writeClientPreference("selectedProxyGroup", state.selectedProxyGroup);
   renderProxies();
 });
 
 document.querySelector("#proxyNodes").addEventListener("click", async (event) => {
   const delayButton = event.target.closest("[data-proxy-delay]");
   if (delayButton) {
+    event.stopPropagation();
     await testSingleNodeDelay(delayButton.dataset.proxyDelay);
     return;
   }
 
-  const selectButton = event.target.closest("[data-proxy-select]");
-  if (!selectButton) return;
-  await selectProxyNode(selectButton.dataset.proxyGroup, selectButton.dataset.proxySelect, selectButton);
+  const card = event.target.closest("[data-proxy-card]");
+  if (!card || card.getAttribute("aria-disabled") === "true") return;
+  await selectProxyNode(card.dataset.proxyGroup, card.dataset.proxySelect, card);
+});
+
+document.querySelector("#proxyNodes").addEventListener("keydown", async (event) => {
+  if (!["Enter", " "].includes(event.key)) return;
+  const card = event.target.closest("[data-proxy-card]");
+  if (!card || card.getAttribute("aria-disabled") === "true") return;
+  event.preventDefault();
+  await selectProxyNode(card.dataset.proxyGroup, card.dataset.proxySelect, card);
 });
 
 const initialConfig = await loadConfig();
@@ -186,8 +199,8 @@ if (initialConfig?.setupRequired) {
   showSetup();
 } else {
   showApp();
-  await loadSubscriptionSettings();
-  await refreshStatus();
+  loadSubscriptionSettings();
+  refreshStatus();
 }
 
 function setView(view) {
@@ -491,11 +504,22 @@ function writeCoreProxySummary(data) {
     : `${data.mode || "Rule"} · 未启用入口`;
 }
 
-async function refreshStatus() {
-  const result = await fetchResult("/api/run?command=status", "dashboard", false);
-  if (!result) return;
-  updateMetrics(result.stdout || "");
-  setConnection(result.ok, result.ok ? "已连接" : "连接异常");
+async function refreshStatus(button = null) {
+  setButtonLoading(button, true);
+  try {
+    const payload = await requestJson("/api/run?command=status", { timeoutMs: 45_000 });
+    writeResult("dashboard", payload);
+    updateMetrics(payload.stdout || "");
+    setConnection(payload.ok, payload.ok ? "\u5df2\u8fde\u63a5" : "\u8fde\u63a5\u5f02\u5e38");
+    return payload;
+  } catch (error) {
+    const payload = { ok: false, error: error.message };
+    writeResult("dashboard", payload);
+    setConnection(false, "\u8fde\u63a5\u5f02\u5e38");
+    return payload;
+  } finally {
+    setButtonLoading(button, false);
+  }
 }
 
 async function runCommand(command, button = null) {
@@ -670,33 +694,48 @@ function friendlyError(payload = {}) {
   };
 }
 
-async function loadProxies(force = false) {
+async function loadProxies(force = false, button = null) {
   if (state.proxyData && !force) {
     renderProxies();
     return;
   }
-  setBusy(true);
-  document.querySelector("#proxyGroups").textContent = "正在读取代理组...";
-  document.querySelector("#proxyNodes").textContent = "";
+  state.proxyLoading = true;
+  setButtonLoading(button, true);
+  if (!state.proxyData) {
+    document.querySelector("#proxyGroups").textContent = "正在读取代理组...";
+    document.querySelector("#proxyNodes").textContent = "";
+  } else {
+    renderProxies();
+  }
   try {
-    const payload = await requestJson("/api/proxies");
+    const payload = await requestJson("/api/proxies", { timeoutMs: 60_000 });
     if (!payload.ok) throw new Error(payload.error || payload.stderr || "读取代理组失败");
     state.proxyData = payload.data;
-    if (!state.selectedProxyGroup) {
-      const preferred = state.proxyData.groups.find((group) => group.name === "Proxies")
-        || state.proxyData.groups.find((group) => group.name === "GLOBAL")
-        || state.proxyData.groups[0];
-      state.selectedProxyGroup = preferred?.name || "";
-    }
+    state.selectedProxyGroup = chooseProxyGroup(state.proxyData.groups, state.selectedProxyGroup);
+    writeClientPreference("selectedProxyGroup", state.selectedProxyGroup);
     renderProxies();
     populateRulePolicyOptions();
-    toast("代理组已刷新");
+    restoreRememberedProxySelections();
+    if (force) toast("\u4ee3\u7406\u7ec4\u5df2\u5237\u65b0");
   } catch (error) {
     document.querySelector("#proxyGroups").textContent = error.message;
     toast("读取代理组失败", "error", error.message);
   } finally {
-    setBusy(false);
+    state.proxyLoading = false;
+    setButtonLoading(button, false);
+    renderProxies();
   }
+}
+
+function chooseProxyGroup(groups = [], current = "") {
+  if (!groups.length) return "";
+  const remembered = readClientPreference("selectedProxyGroup");
+  if (remembered && groups.some((group) => group.name === remembered)) return remembered;
+  if (current && groups.some((group) => group.name === current)) return current;
+  const preferred = groups.find((group) => group.name === "Proxies")
+    || groups.find((group) => group.name === "GLOBAL")
+    || groups[0];
+  return preferred?.name || "";
 }
 
 function renderProxies() {
@@ -707,14 +746,16 @@ function renderProxies() {
 
   const groups = state.proxyData?.groups || [];
   if (!groups.length) {
-    groupsContainer.textContent = "没有读取到代理组。";
+    groupsContainer.textContent = state.proxyLoading ? "正在读取代理组..." : "没有读取到代理组。";
     document.querySelector("#proxyGroupTitle").textContent = "节点";
-    document.querySelector("#proxyGroupMeta").textContent = "请先刷新代理组。";
+    document.querySelector("#proxyGroupMeta").textContent = state.proxyLoading ? "正在连接 Mihomo API..." : "请先刷新代理组。";
+    document.querySelector("#delayGroupBtn").disabled = true;
     return;
   }
 
   if (!groups.some((group) => group.name === state.selectedProxyGroup)) {
-    state.selectedProxyGroup = groups[0].name;
+    state.selectedProxyGroup = chooseProxyGroup(groups);
+    writeClientPreference("selectedProxyGroup", state.selectedProxyGroup);
   }
 
   for (const group of groups) {
@@ -722,6 +763,7 @@ function renderProxies() {
     button.className = `proxy-group-item${group.name === state.selectedProxyGroup ? " active" : ""}`;
     button.type = "button";
     button.dataset.proxyGroup = group.name;
+    button.disabled = state.proxyLoading;
     button.innerHTML = `
       <span class="proxy-group-name">${escapeHtml(group.name)}</span>
       <span class="proxy-group-meta">${escapeHtml(group.type || "Group")} · ${group.optionCount} 节点</span>
@@ -745,42 +787,77 @@ function renderProxies() {
     const active = option === group.now;
     const delayState = delayClass(delay, hasMeasuredDelay);
     const testingNode = state.testingDelayNodes.has(option);
-    const delayDisabled = state.busy || state.testingDelays || testingNode ? " disabled" : "";
-    const selectDisabled = state.busy ? " disabled" : "";
+    const selectingNode = state.selectingProxyNodes.has(selectionKey(group.name, option));
+    const delayDisabled = state.proxyLoading || state.testingDelays || testingNode ? " disabled" : "";
+    const selectDisabled = state.proxyLoading || selectingNode ? "true" : "false";
     const card = document.createElement("article");
-    card.className = `node-card${active ? " active" : ""}`;
+    card.className = `node-card${active ? " active" : ""}${selectingNode ? " selecting" : ""}`;
+    card.dataset.proxyCard = "true";
+    card.dataset.proxyGroup = group.name;
+    card.dataset.proxySelect = option;
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-pressed", active ? "true" : "false");
+    card.setAttribute("aria-disabled", selectDisabled);
     card.innerHTML = `
       <div class="node-main">
         <span class="node-title">${escapeHtml(option)}</span>
         <span class="node-meta">${escapeHtml(node.type || "Node")}${active ? " · 当前" : ""}</span>
       </div>
-      <span class="node-delay ${delayState}">${formatDelay(delay)}</span>
-      <div class="node-actions">
-        <button class="ghost-button node-action${testingNode ? " loading" : ""}" data-proxy-delay="${escapeAttribute(option)}" type="button"${delayDisabled}>测速</button>
-        <button class="node-action${active ? " active-choice" : ""}" data-proxy-group="${escapeAttribute(group.name)}" data-proxy-select="${escapeAttribute(option)}" type="button"${selectDisabled}>${active ? "已选" : "选择"}</button>
-      </div>
+      <button class="node-delay node-delay-button ${delayState}${testingNode ? " loading" : ""}" data-proxy-delay="${escapeAttribute(option)}" type="button"${delayDisabled} title="点击测速">${formatDelay(delay)}</button>
     `;
     nodesContainer.appendChild(card);
   }
-  document.querySelector("#delayGroupBtn").disabled = state.busy || state.testingDelays;
+  document.querySelector("#delayGroupBtn").disabled = state.proxyLoading || state.testingDelays;
 }
 
-async function selectProxyNode(group, name, button = null) {
-  setBusy(true);
-  setButtonLoading(button, true);
+async function selectProxyNode(group, name, element = null, options = {}) {
+  if (!group || !name) return;
+  const currentGroup = state.proxyData?.groups?.find((item) => item.name === group);
+  if (currentGroup?.now === name && !options.force) return;
+  const key = selectionKey(group, name);
+  if (state.selectingProxyNodes.has(key)) return;
+  state.selectingProxyNodes.add(key);
+  if (element) element.classList.add("selecting");
+  renderProxies();
   try {
     const payload = await requestJson("/api/proxies/select", {
       method: "POST",
       body: { group, name },
+      timeoutMs: 30_000,
     });
     if (!payload.ok) throw new Error(payload.error || payload.stderr || "切换节点失败");
-    toast(`已切换：${name}`, "success");
-    await loadProxies(true);
+    if (currentGroup) currentGroup.now = name;
+    if (options.remember !== false) rememberProxySelection(group, name);
+    renderProxies();
+    if (!options.silent) toast(`已切换：${name}`, "success");
   } catch (error) {
-    toast("切换节点失败", "error", error.message);
+    if (!options.silent) toast("切换节点失败", "error", error.message);
   } finally {
-    setButtonLoading(button, false);
-    setBusy(false);
+    state.selectingProxyNodes.delete(key);
+    renderProxies();
+  }
+}
+
+function selectionKey(group, name) {
+  return `${group}\u0000${name}`;
+}
+
+function rememberProxySelection(group, name) {
+  writeClientPreference(`proxySelection:${group}`, name);
+}
+
+function readRememberedProxySelection(group) {
+  return readClientPreference(`proxySelection:${group}`);
+}
+
+function restoreRememberedProxySelections() {
+  if (state.restoredProxySelections || !state.proxyData?.groups?.length) return;
+  state.restoredProxySelections = true;
+  for (const group of state.proxyData.groups) {
+    const remembered = readRememberedProxySelection(group.name);
+    if (!remembered || group.now === remembered || !group.options?.includes(remembered)) continue;
+    selectProxyNode(group.name, remembered, null, { silent: true, remember: false });
   }
 }
 
@@ -1119,6 +1196,26 @@ function extractLine(text, prefixes) {
 function compact(value) {
   if (!value) return "--";
   return value.replace(/\s*\(.+\)$/, "").trim();
+}
+
+function readClientPreference(key) {
+  try {
+    return localStorage.getItem(`mihomo-manager:${key}`) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeClientPreference(key, value) {
+  try {
+    if (value === undefined || value === null || value === "") {
+      localStorage.removeItem(`mihomo-manager:${key}`);
+    } else {
+      localStorage.setItem(`mihomo-manager:${key}`, String(value));
+    }
+  } catch {
+    // Ignore storage failures in private browsing or locked-down webviews.
+  }
 }
 
 function setConnection(ok, label) {

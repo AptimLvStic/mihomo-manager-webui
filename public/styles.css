@@ -465,11 +465,43 @@ label span {
 .node-card {
   position: relative;
   gap: 10px;
+  min-height: 86px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   padding: 14px;
-  padding-right: 86px;
+  padding-right: 92px;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.node-card:hover,
+.node-card:focus-visible {
+  border-color: rgba(22, 124, 112, 0.36);
+  background: #f7fbf8;
+  outline: none;
+}
+
+.node-card[aria-disabled="true"] {
+  cursor: wait;
+}
+
+.node-card.selecting {
+  pointer-events: none;
+  opacity: 0.72;
+}
+
+.node-card.selecting::after {
+  content: "";
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(104, 115, 107, 0.28);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: delay-spin 0.75s linear infinite;
 }
 
 .node-main {
@@ -483,6 +515,27 @@ label span {
   top: 12px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.node-delay-button {
+  min-width: 58px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 6px;
+  text-align: right;
+  cursor: pointer;
+}
+
+.node-delay-button:hover,
+.node-delay-button:focus-visible {
+  background: rgba(22, 124, 112, 0.1);
+  outline: none;
+}
+
+.node-delay-button:disabled {
+  cursor: progress;
 }
 
 .node-delay.fast {
