@@ -10,6 +10,8 @@ const state = {
   testingDelays: false,
   testingDelayNodes: new Set(),
   proxyProgressText: "",
+  authMode: "login",
+  registrationOpen: false,
   subscriptionSettings: null,
   mihomoProxySettings: null,
 };
@@ -74,6 +76,14 @@ document.querySelector("#navTabs").addEventListener("click", (event) => {
 });
 
 document.querySelector("#refreshBtn").addEventListener("click", (event) => refreshStatus(event.currentTarget));
+document.querySelector("#logoutBtn").addEventListener("click", () => logout());
+document.querySelector("#authToggleBtn").addEventListener("click", () => {
+  setAuthMode(state.authMode === "login" ? "register" : "login");
+});
+document.querySelector("#authForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await submitAuth(event.submitter);
+});
 
 document.body.addEventListener("click", async (event) => {
   const runButton = event.target.closest("[data-run]");
@@ -178,10 +188,99 @@ document.querySelector("#proxyNodes").addEventListener("keydown", async (event) 
   await selectProxyNode(card.dataset.proxyGroup, card.dataset.proxySelect, card);
 });
 
-await loadConfig();
-showApp();
-loadSubscriptionSettings();
-refreshStatus();
+await boot();
+
+async function boot() {
+  try {
+    const status = await requestJson("/api/auth/status", { timeoutMs: 8_000, skipAuthRedirect: true });
+    state.registrationOpen = Boolean(status.registrationOpen);
+    if (status.authenticated) {
+      await enterApp();
+      return;
+    }
+    showAuth(status.registrationOpen ? "register" : "login");
+  } catch (error) {
+    showAuth("login");
+    toast("认证状态读取失败", "error", error.message);
+  }
+}
+
+async function enterApp() {
+  await loadConfig();
+  showApp();
+  loadSubscriptionSettings();
+  refreshStatus();
+}
+
+function showAuth(mode = "login") {
+  document.querySelector("#appShell").classList.add("is-hidden");
+  document.querySelector("#authScreen").classList.remove("is-hidden");
+  setAuthMode(mode);
+}
+
+function showApp() {
+  document.querySelector("#authScreen").classList.add("is-hidden");
+  document.querySelector("#appShell").classList.remove("is-hidden");
+}
+
+function setAuthMode(mode) {
+  state.authMode = mode === "register" && state.registrationOpen ? "register" : "login";
+  const isRegister = state.authMode === "register";
+  document.querySelector("#authTitle").textContent = isRegister ? "注册管理员" : "登录";
+  document.querySelector("#authCopy").textContent = isRegister
+    ? "创建第一个管理员账号后即可进入本地管理面板。"
+    : "请输入账号和密码进入管理面板。";
+  document.querySelector("#authSubmitBtn").textContent = isRegister ? "注册并登录" : "登录";
+  document.querySelector("#authConfirmRow").classList.toggle("is-hidden", !isRegister);
+  document.querySelector("#authConfirmPassword").required = isRegister;
+  document.querySelector("#authToggleBtn").classList.toggle("is-hidden", !state.registrationOpen);
+  document.querySelector("#authToggleBtn").textContent = isRegister ? "已有账号，去登录" : "创建账号";
+  document.querySelector("#authHint").textContent = state.registrationOpen
+    ? "首个账号可直接注册；后续是否开放注册由部署环境变量控制。"
+    : "注册已关闭，请使用已有账号登录。";
+}
+
+async function submitAuth(button = null) {
+  const username = document.querySelector("#authUsername").value.trim();
+  const password = document.querySelector("#authPassword").value;
+  const confirm = document.querySelector("#authConfirmPassword").value;
+  if (!username || !password) {
+    toast("请输入用户名和密码", "error");
+    return;
+  }
+  if (state.authMode === "register" && password !== confirm) {
+    toast("两次输入的密码不一致", "error");
+    return;
+  }
+  setButtonLoading(button, true);
+  try {
+    const url = state.authMode === "register" ? "/api/auth/register" : "/api/auth/login";
+    const payload = await requestJson(url, {
+      method: "POST",
+      body: { username, password },
+      timeoutMs: 15_000,
+      skipAuthRedirect: true,
+    });
+    if (!payload.ok) throw new Error(payload.error || "认证失败");
+    state.registrationOpen = Boolean(payload.registrationOpen);
+    document.querySelector("#authPassword").value = "";
+    document.querySelector("#authConfirmPassword").value = "";
+    await enterApp();
+  } catch (error) {
+    toast(state.authMode === "register" ? "注册失败" : "登录失败", "error", error.message);
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+async function logout() {
+  try {
+    await requestJson("/api/auth/logout", { method: "POST", body: {}, timeoutMs: 8_000, skipAuthRedirect: true });
+  } finally {
+    showAuth("login");
+    setConnection(false, "未登录");
+  }
+}
 
 function setView(view) {
   state.activeView = view;
@@ -210,17 +309,13 @@ async function loadConfig() {
     document.querySelector("#serverLabel").textContent = "Mihomo Server";
     return null;
   }
-  const { host, port, user, auth, targetLabel, runtimeLabel } = payload.data;
-  const target = targetLabel || (host ? `${host}${port ? `:${port}` : ""}` : "Mihomo Server");
+  const { targetLabel, runtimeLabel } = payload.data;
+  const target = targetLabel || "Local Mihomo Host";
   document.querySelector("#serverLabel").textContent = target;
   document.querySelector("#configHost").textContent = target;
-  document.querySelector("#configUser").textContent = user || "root";
-  document.querySelector("#configScript").textContent = runtimeLabel || (auth === "key" ? "SSH 密钥管理通道" : "SSH 密码管理通道");
+  document.querySelector("#configUser").textContent = "root / local host";
+  document.querySelector("#configScript").textContent = runtimeLabel || "本地管理通道";
   return payload.data;
-}
-
-function showApp() {
-  document.querySelector("#appShell").classList.remove("is-hidden");
 }
 
 async function loadSubscriptionSettings() {
@@ -443,6 +538,7 @@ async function requestJson(url, options = {}) {
     body,
     timeoutMs = 120_000,
     retries = 0,
+    skipAuthRedirect = false,
   } = options;
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -457,6 +553,9 @@ async function requestJson(url, options = {}) {
       });
       const text = await response.text();
       const payload = text ? JSON.parse(text) : {};
+      if (response.status === 401 && !skipAuthRedirect) {
+        showAuth("login");
+      }
       if (!response.ok && payload.ok !== false) {
         payload.ok = false;
         payload.error = `HTTP ${response.status}`;
@@ -553,15 +652,9 @@ function friendlyError(payload = {}) {
       detail,
     };
   }
-  if (/permission denied|publickey|authentication failed/i.test(detail)) {
+  if (/permission denied|operation not permitted|nsenter/i.test(detail)) {
     return {
-      title: "SSH 认证失败，请检查服务器地址、用户、密码或私钥权限。",
-      detail,
-    };
-  }
-  if (/sshpass|spawn sshpass/i.test(detail)) {
-    return {
-      title: "当前环境缺少 sshpass，无法使用 SSH 密码模式。",
+      title: "本地管理权限不足，请检查容器是否按本地管理 Compose 权限启动。",
       detail,
     };
   }

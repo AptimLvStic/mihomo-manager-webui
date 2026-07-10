@@ -1,84 +1,96 @@
 # Mihomo Manager WebUI
 
-简体中文 | [English](#english)
+Mihomo Manager WebUI is a local-first web console for managing a Linux host running the Mihomo core. It focuses on subscription management, proxy group selection, node delay testing, rule insertion, service control, proxy entry configuration, and common system proxy/proxychains operations.
 
-`mihomo-manager-webui` 是一个面向单台 Linux 服务器的 Mihomo 管理面板，用于订阅、节点测速、策略组切换、规则和系统代理配置。部署后会直接管理当前配置好的目标服务器。
+The project no longer uses an SSH management bridge. The Docker deployment manages the local Docker host through `nsenter`, so it is intended to be deployed on the same Linux host that runs Mihomo.
 
-## 核心场景
+## Features
 
-你的服务器 IP 位于中国大陆时，可以通过 Mihomo 订阅选择美国等可用节点，再配合系统代理或 proxychains 让 CPAM、Codex CLI、脚本任务等命令行程序走代理链路。
+- Web login with first-user registration.
+- Local host management only; no SSH key or SSH password mode.
+- Subscription settings and update workflow.
+- Subscription updates preserve local Mihomo configuration changes.
+- Proxy group and node view with streaming delay test results.
+- Mihomo inbound configuration: HTTP, SOCKS5, Mixed, Redir, TProxy and TUN.
+- Rule insertion with policy selection.
+- systemd service control for `mihomo.service` and subscription timer inspection.
+- System proxy and optional proxychains configuration helpers.
 
-主要流程：
+## Requirements
 
-1. 添加或更新订阅链接。
-2. 在代理页选择 `Proxies` 策略组。
-3. 点击延迟数字进行节点测速，或批量测试延迟。
-4. 点击节点卡片切换当前策略组节点。
-5. 开启系统代理或配置 proxychains，让命令行程序通过 Mihomo 出口访问网络。
+See [docs/dependencies.md](docs/dependencies.md) for the full dependency list.
 
-## 功能
+Minimum host requirements:
 
-- 订阅管理：订阅名称、描述、User-Agent、自动更新、系统代理更新、内核更新。
-- 代理管理：策略组展示、节点卡片选择、延迟数字测速、批量流式并发测速。
-- 选择记忆：记住上次打开的代理组和每个代理组选择过的节点。
-- Mihomo 设置：Rule / Global / Direct 模式，HTTP、SOCKS5、Mixed、Redir、TProxy 端口和 TUN 设置。
-- 规则管理：查看规则、添加规则类型、规则内容和代理策略。
-- 服务管理：启动、停止、重启 Mihomo，查看 systemd 状态和监听端口。
-- 系统代理：写入 shell / APT 代理环境，保留 proxychains 配置能力。
-- Docker 部署：支持 Docker 和 Docker Compose。
+- Linux with systemd.
+- Docker Engine and Docker Compose v2.
+- Mihomo installed on the host, usually `/usr/local/bin/mihomo`.
+- Mihomo config at `/etc/mihomo/config.yaml`.
+- Python 3 and PyYAML on the host, usually package `python3-yaml`.
+- `curl`, `iproute2`/`ss`, and standard GNU utilities.
+- Optional: `proxychains4` if you want WebUI-managed proxychains configuration.
 
-## 部署方式
+## Docker Compose Deployment
 
-### Docker Compose
-
-推荐使用 Compose 部署：
-
-```bash
-cd /data/mihomo-manager-webui
-docker compose -f docker-compose.yml -f docker-compose.ssh-key.yml up -d --build
-```
-
-查看状态：
+Clone the repository on the same host that runs Mihomo:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.ssh-key.yml ps
-docker logs -f mihomo-manager-webui
+git clone https://github.com/AptimLvStic/mihomo-manager-webui.git /opt/mihomo-manager-webui
+cd /opt/mihomo-manager-webui
+cp .env.example .env
 ```
 
-默认 WebUI 地址：
+Edit `.env`:
+
+```env
+MIHOMO_MANAGER_BIND=127.0.0.1
+MIHOMO_MANAGER_HOST_PROJECT_DIR=/opt/mihomo-manager-webui
+AUTH_ALLOW_REGISTRATION=false
+SESSION_TTL_HOURS=24
+COOKIE_SECURE=false
+```
+
+Start the service:
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+Open the WebUI:
 
 ```text
-http://服务器IP:5178
+http://127.0.0.1:5178
 ```
 
-当前生产部署使用环境变量注入目标服务器连接信息，Web 页面启动后直接进入管理面板。
+The first user can register from the login page. After one user exists, public registration is disabled unless `AUTH_ALLOW_REGISTRATION=true` is set.
 
-### Docker
+## Binding and Reverse Proxy
 
-也可以使用纯 Docker 运行，按实际路径替换密钥和数据目录：
+For production, prefer binding the WebUI to localhost and exposing it through a TLS reverse proxy:
 
-```bash
-docker build -t mihomo-manager-webui .
-docker run -d \
-  --name mihomo-manager-webui \
-  --restart unless-stopped \
-  -p 0.0.0.0:5178:5178 \
-  -e LISTEN_HOST=0.0.0.0 \
-  -e MIHOMO_BIND=0.0.0.0 \
-  -e MIHOMO_HOST=host.docker.internal \
-  -e MIHOMO_SSH_PORT=22 \
-  -e MIHOMO_USER=root \
-  -e MIHOMO_AUTH=key \
-  -e MIHOMO_KEY=/run/secrets/mihomo_ssh_key \
-  -v /data/mihomo-manager-webui/data:/data \
-  -v /data/mihomo-manager-webui/secrets/mihomo_manager_ed25519:/run/secrets/mihomo_ssh_key:ro \
-  --add-host=host.docker.internal:host-gateway \
-  mihomo-manager-webui
+```env
+MIHOMO_MANAGER_BIND=127.0.0.1
+COOKIE_SECURE=true
 ```
 
-## 常用路径
+Example Nginx location:
 
-WebUI 会管理目标服务器上的这些路径：
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:5178;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+If you bind to `0.0.0.0`, restrict access with firewall rules or a private network. This application has host-management privileges and should not be exposed as an unauthenticated public service.
+
+## Important Paths
+
+Host paths managed by the WebUI:
 
 ```text
 /etc/mihomo/config.yaml
@@ -89,72 +101,53 @@ WebUI 会管理目标服务器上的这些路径：
 /etc/profile.d/mihomo-proxy.sh
 /etc/apt/apt.conf.d/95mihomo-proxy
 /etc/proxychains4.conf
+/usr/local/sbin/update-mihomo-subscription
 ```
 
-## CPAM / Codex 代理建议
-
-推荐优先使用 Mihomo 的 Mixed 或 SOCKS5 入口：
-
-```bash
-export HTTP_PROXY=http://127.0.0.1:7890
-export HTTPS_PROXY=http://127.0.0.1:7890
-export ALL_PROXY=socks5h://127.0.0.1:7891
-```
-
-对于不读取代理环境变量的命令行程序，可以使用 proxychains：
-
-```bash
-proxychains4 codex --help
-```
-
-## 安全说明
-
-- 不要把订阅 token、SSH 私钥、密码提交到 Git 仓库。
-- WebUI 当前监听 `0.0.0.0:5178`，生产环境建议加安全组白名单、反向代理认证或 VPN 访问控制。
-- Mihomo 控制接口建议保持 `127.0.0.1:9090`，不要直接暴露到公网。
-
----
-
-## English
-
-`mihomo-manager-webui` is a Web UI for managing Mihomo on a single Linux server. It manages subscriptions, proxy groups, node delay tests, rule editing, service control, and system proxy settings.
-
-After deployment, the WebUI directly manages the configured target server.
-
-## Main Workflow
-
-1. Add or update a subscription URL.
-2. Open the `Proxies` group.
-3. Click delay numbers to test nodes, or run batch delay tests.
-4. Click a node card to switch the selected proxy.
-5. Enable system proxy or proxychains for CLI tools such as CPAM and Codex.
-
-## Features
-
-- Subscription settings: name, description, User-Agent, auto update, system proxy update, kernel reload.
-- Proxy management: proxy groups, card-based node switching, delay-number testing, progressive concurrent batch tests.
-- Remembered selections: keeps the last opened group and selected nodes per group.
-- Mihomo settings: Rule / Global / Direct mode, inbound ports, bind address, TUN settings.
-- Rule management: view and add rules.
-- Service management: start, stop, restart, status, listening ports.
-- System proxy and proxychains support.
-- Docker and Docker Compose deployment.
-
-## Docker Compose
-
-```bash
-cd /data/mihomo-manager-webui
-docker compose -f docker-compose.yml -f docker-compose.ssh-key.yml up -d --build
-```
-
-Open:
+Application data path:
 
 ```text
-http://SERVER_IP:5178
+./data/auth.json
 ```
+
+`auth.json` stores usernames and password hashes. Do not commit `data/`.
 
 ## Security Notes
 
-- Never commit subscription tokens, SSH keys, or passwords.
-- If the WebUI listens on `0.0.0.0:5178`, protect it with firewall rules, reverse-proxy authentication, or VPN access.
-- Keep the Mihomo controller on `127.0.0.1:9090`.
+Read [docs/security.md](docs/security.md) before exposing the WebUI beyond localhost. The short version:
+
+- The container needs elevated host-management privileges when deployed with Docker.
+- Treat WebUI admin access as equivalent to root on the host.
+- Use TLS, firewall restrictions, and strong passwords.
+- Keep subscription URLs, cookies, generated data, and Mihomo configs out of Git.
+
+## Troubleshooting
+
+See [docs/troubleshooting.md](docs/troubleshooting.md).
+
+Common checks:
+
+```bash
+docker compose ps
+docker logs --tail=100 mihomo-manager-webui
+curl -fsS http://127.0.0.1:5178/api/auth/status | jq
+systemctl status mihomo --no-pager
+journalctl -u mihomo -n 100 --no-pager
+```
+
+## Development Checks
+
+```bash
+node --check server.js
+node --check public/app.js
+bash -n scripts/update-mihomo-subscription
+docker compose config --quiet
+```
+
+---
+
+## English Quick Start
+
+This project is a local Mihomo management WebUI for Linux hosts. It does not use SSH. Deploy it on the same host that runs Mihomo, start with `docker compose up -d --build`, register the first admin user in the browser, then manage subscriptions, proxy groups, node delay tests, rules, service state, and Mihomo inbound ports from the UI.
+
+Read `docs/dependencies.md`, `docs/security.md`, and `docs/troubleshooting.md` before production use.

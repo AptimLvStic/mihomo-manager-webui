@@ -1,7 +1,6 @@
 .git
 node_modules
 npm-debug.log
-server.config.json
 .env
 work
 *.bundle

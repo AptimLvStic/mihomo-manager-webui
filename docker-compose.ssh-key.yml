@@ -1,6 +1,0 @@
-services:
-  mihomo-manager:
-    environment:
-      MIHOMO_KEY_FILE: /run/secrets/mihomo_ssh_key
-    volumes:
-      - ${MIHOMO_KEY_PATH:?Set MIHOMO_KEY_PATH for SSH key bridge}:/run/secrets/mihomo_ssh_key:ro

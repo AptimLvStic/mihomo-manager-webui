@@ -7,6 +7,36 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <div class="auth-screen" id="authScreen">
+      <section class="auth-panel">
+        <div class="auth-brand">
+          <span class="brand-mark">M</span>
+          <div>
+            <p class="eyebrow">Mihomo Web Console</p>
+            <h1 id="authTitle">登录</h1>
+          </div>
+        </div>
+        <p class="auth-copy" id="authCopy">请输入账号和密码进入管理面板。</p>
+        <form class="stack" id="authForm">
+          <label>
+            <span>用户名</span>
+            <input id="authUsername" autocomplete="username" required minlength="3" maxlength="40" placeholder="admin" />
+          </label>
+          <label>
+            <span>密码</span>
+            <input id="authPassword" autocomplete="current-password" required minlength="8" type="password" />
+          </label>
+          <label class="is-hidden" id="authConfirmRow">
+            <span>确认密码</span>
+            <input id="authConfirmPassword" autocomplete="new-password" minlength="8" type="password" />
+          </label>
+          <button class="primary-button" id="authSubmitBtn" type="submit">登录</button>
+        </form>
+        <button class="ghost-button auth-switch" id="authToggleBtn" type="button">创建账号</button>
+        <p class="auth-hint" id="authHint"></p>
+      </section>
+    </div>
+
     <div class="app-shell is-hidden" id="appShell">
       <aside class="sidebar" aria-label="Main navigation">
         <div class="brand">
@@ -36,6 +66,7 @@
           </div>
           <div class="topbar-actions">
             <button class="ghost-button" id="refreshBtn" type="button">刷新状态</button>
+            <button class="ghost-button" id="logoutBtn" type="button">退出登录</button>
             <span class="status-pill" id="connectionPill">待连接</span>
           </div>
         </header>

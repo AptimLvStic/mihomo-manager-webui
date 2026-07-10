@@ -1,13 +1,19 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 const rootDir = resolve(".");
 const publicDir = join(rootDir, "public");
-const configFile = process.env.SERVER_CONFIG_FILE ? resolve(process.env.SERVER_CONFIG_FILE) : join(rootDir, "server.config.json");
+const dataDir = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : join(rootDir, "data");
+const authFile = process.env.AUTH_FILE ? resolve(process.env.AUTH_FILE) : join(dataDir, "auth.json");
 const port = Number(process.env.PORT || 5178);
 const listenHost = process.env.LISTEN_HOST || "127.0.0.1";
+const sessionCookieName = "mihomo_manager_session";
+const sessionTtlMs = Math.max(Number(process.env.SESSION_TTL_HOURS || 24), 1) * 60 * 60 * 1000;
+const sessions = new Map();
+mkdirSync(dataDir, { recursive: true });
 let config = loadConfig();
 
 const mimeTypes = {
@@ -60,52 +66,188 @@ createServer(async (req, res) => {
 });
 
 function loadConfig() {
-  const hasFileConfig = existsSync(configFile);
-  const fileConfig = hasFileConfig
-    ? JSON.parse(readFileSync(configFile, "utf8"))
-    : {};
-  const identityFile = process.env.MIHOMO_KEY || process.env.MIHOMO_KEY_FILE || fileConfig.identityFile || "";
-  const password = process.env.MIHOMO_PASSWORD || fileConfig.password || "";
-  const auth = String(
-    process.env.MIHOMO_AUTH || fileConfig.auth || (password && !identityFile ? "password" : "key"),
-  ).toLowerCase();
-  if (!["key", "password"].includes(auth)) {
-    throw new Error("MIHOMO_AUTH must be key or password.");
-  }
-  const merged = {
+  return {
     configured: true,
-    host: process.env.MIHOMO_HOST || fileConfig.host,
-    port: Number(process.env.MIHOMO_SSH_PORT || fileConfig.port || 22),
-    user: process.env.MIHOMO_USER || fileConfig.user || "root",
-    auth,
-    identityFile,
-    password,
+    mode: "local",
+    targetLabel: "Local Mihomo Host",
+    runtimeLabel: "本地管理通道",
   };
-  if (!merged.host || merged.host === "your-server-ip") {
-    throw new Error("Missing target server host. Set MIHOMO_HOST or configure host in server.config.json.");
+}
+
+function loadAuthStore() {
+  if (!existsSync(authFile)) {
+    return { users: [] };
   }
-  if (merged.auth === "key" && !merged.identityFile) {
-    throw new Error("Missing SSH identity file. Set MIHOMO_KEY/MIHOMO_KEY_FILE or configure identityFile in server.config.json.");
+  try {
+    const data = JSON.parse(readFileSync(authFile, "utf8"));
+    return { users: Array.isArray(data.users) ? data.users : [] };
+  } catch {
+    return { users: [] };
   }
-  if (merged.auth === "password" && !merged.password) {
-    throw new Error("Missing SSH password. Set MIHOMO_PASSWORD or configure password in server.config.json.");
+}
+
+function saveAuthStore(store) {
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(authFile, JSON.stringify({ users: store.users || [] }, null, 2));
+  chmodSync(authFile, 0o600);
+}
+
+function registrationOpen(store = loadAuthStore()) {
+  return !store.users.length || /^(1|true|yes|on)$/i.test(process.env.AUTH_ALLOW_REGISTRATION || "");
+}
+
+function normalizeUsername(value) {
+  return String(value || "").trim();
+}
+
+function validateUsername(username) {
+  return /^[A-Za-z0-9_.-]{3,40}$/.test(username);
+}
+
+function hashPassword(password, salt = randomBytes(16).toString("hex")) {
+  const hash = scryptSync(password, salt, 64).toString("hex");
+  return `scrypt$${salt}$${hash}`;
+}
+
+function verifyPassword(password, storedHash) {
+  const [scheme, salt, expected] = String(storedHash || "").split("$");
+  if (scheme !== "scrypt" || !salt || !expected) return false;
+  const actual = scryptSync(password, salt, 64);
+  const expectedBuffer = Buffer.from(expected, "hex");
+  return actual.length === expectedBuffer.length && timingSafeEqual(actual, expectedBuffer);
+}
+
+function parseCookies(req) {
+  const result = {};
+  for (const part of String(req.headers.cookie || "").split(";")) {
+    const index = part.indexOf("=");
+    if (index === -1) continue;
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    if (key) result[key] = decodeURIComponent(value);
   }
-  return merged;
+  return result;
+}
+
+function cookieFlags() {
+  const secure = /^(1|true|yes|on)$/i.test(process.env.COOKIE_SECURE || "") ? "; Secure" : "";
+  return `HttpOnly; SameSite=Lax; Path=/${secure}`;
+}
+
+function setSessionCookie(res, token) {
+  res.setHeader("Set-Cookie", `${sessionCookieName}=${encodeURIComponent(token)}; Max-Age=${Math.floor(sessionTtlMs / 1000)}; ${cookieFlags()}`);
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${sessionCookieName}=; Max-Age=0; ${cookieFlags()}`);
+}
+
+function getAuthenticatedUser(req) {
+  const token = parseCookies(req)[sessionCookieName];
+  if (!token) return null;
+  const session = sessions.get(token);
+  if (!session || session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+  session.expiresAt = Date.now() + sessionTtlMs;
+  return { username: session.username };
+}
+
+function createSession(res, username) {
+  const token = randomBytes(32).toString("hex");
+  sessions.set(token, { username, expiresAt: Date.now() + sessionTtlMs });
+  setSessionCookie(res, token);
+}
+
+async function handleAuthApi(req, res, url) {
+  const store = loadAuthStore();
+  if (req.method === "GET" && url.pathname === "/api/auth/status") {
+    const user = getAuthenticatedUser(req);
+    sendJson(res, 200, {
+      ok: true,
+      authenticated: Boolean(user),
+      user,
+      registrationOpen: registrationOpen(store),
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/register") {
+    if (!registrationOpen(store)) {
+      sendJson(res, 403, { ok: false, error: "Registration is disabled." });
+      return;
+    }
+    const body = await readBody(req);
+    const username = normalizeUsername(body.username);
+    const password = String(body.password || "");
+    if (!validateUsername(username)) {
+      sendJson(res, 400, { ok: false, error: "Username must be 3-40 characters: letters, numbers, dot, underscore or hyphen." });
+      return;
+    }
+    if (password.length < 8) {
+      sendJson(res, 400, { ok: false, error: "Password must be at least 8 characters." });
+      return;
+    }
+    if (store.users.some((user) => user.username.toLowerCase() === username.toLowerCase())) {
+      sendJson(res, 409, { ok: false, error: "Username already exists." });
+      return;
+    }
+    store.users.push({ username, passwordHash: hashPassword(password), createdAt: new Date().toISOString() });
+    saveAuthStore(store);
+    createSession(res, username);
+    sendJson(res, 200, { ok: true, user: { username }, registrationOpen: registrationOpen(store) });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    const body = await readBody(req);
+    const username = normalizeUsername(body.username);
+    const password = String(body.password || "");
+    const user = store.users.find((item) => item.username.toLowerCase() === username.toLowerCase());
+    if (!user || !verifyPassword(password, user.passwordHash)) {
+      sendJson(res, 401, { ok: false, error: "Invalid username or password." });
+      return;
+    }
+    createSession(res, user.username);
+    sendJson(res, 200, { ok: true, user: { username: user.username }, registrationOpen: registrationOpen(store) });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    const token = parseCookies(req)[sessionCookieName];
+    if (token) sessions.delete(token);
+    clearSessionCookie(res);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  sendJson(res, 404, { ok: false, error: "Not found." });
 }
 
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+  if (url.pathname.startsWith("/api/auth/")) {
+    await handleAuthApi(req, res, url);
+    return;
+  }
+  const user = getAuthenticatedUser(req);
+  if (!user) {
+    sendJson(res, 401, { ok: false, error: "Authentication required." });
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/config") {
     sendJson(res, 200, {
       ok: true,
       data: {
-        host: config.host,
-        port: config.port,
-        user: config.user,
-        auth: config.auth,
+        mode: config.mode,
+        host: "localhost",
+        port: null,
+        user: "root",
+        auth: "local",
         configured: config.configured,
-        targetLabel: config.host ? `${config.host}:${config.port}` : "Mihomo Server",
-        runtimeLabel: config.auth === "password" ? "SSH 密码管理通道" : "SSH 密钥管理通道",
+        targetLabel: config.targetLabel,
+        runtimeLabel: config.runtimeLabel,
       },
     });
     return;
@@ -324,6 +466,7 @@ SOCKS_PROXY_URL=socks5h://127.0.0.1:7891
 NO_PROXY_LIST=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 DEFAULT_UA=User-Agent
 WEBUI_LANG=zh
+HOST_PROJECT_DIR=\${MIHOMO_MANAGER_HOST_PROJECT_DIR:-/data/mihomo-manager-webui}
 
 if [ -r "$WEBUI_ENV_FILE" ]; then
   . "$WEBUI_ENV_FILE"
@@ -1326,7 +1469,7 @@ function updateFunctionBody() {
     exit 1
   fi
   updater=/usr/local/sbin/update-mihomo-subscription
-  project_updater=/data/mihomo-manager-webui/scripts/update-mihomo-subscription
+  project_updater=$HOST_PROJECT_DIR/scripts/update-mihomo-subscription
   if [ ! -x "$updater" ]; then
     if [ -r "$project_updater" ]; then
       install -m 755 "$project_updater" "$updater"
@@ -1507,36 +1650,24 @@ systemctl is-active mihomo.service
 `;
 }
 
-function runRemoteScript(script, timeoutMs = 90_000, targetConfig = config) {
-  const { command, args, env } = buildScriptProcess(targetConfig);
+function runRemoteScript(script, timeoutMs = 90_000) {
+  const { command, args, env } = buildScriptProcess();
   return runScriptProcess(command, args, script, timeoutMs, env);
 }
 
-function buildScriptProcess(targetConfig = config) {
-  const knownHostsFile = process.env.SSH_KNOWN_HOSTS_FILE || "/tmp/mihomo_manager_known_hosts";
-  const sshArgs = ["-p", String(targetConfig.port), "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + knownHostsFile];
-  let command = "ssh";
-  let args = sshArgs;
-  let env = process.env;
-
-  if (targetConfig.auth === "key") {
-    args = ["-i", targetConfig.identityFile, "-o", "BatchMode=yes", ...sshArgs];
-  } else {
-    command = "sshpass";
-    args = [
-      "-e",
-      "ssh",
-      "-o",
-      "PreferredAuthentications=password",
-      "-o",
-      "PubkeyAuthentication=no",
-      ...sshArgs,
-    ];
-    env = { ...process.env, SSHPASS: targetConfig.password };
+function buildScriptProcess() {
+  if (/^(1|true|yes|on|direct)$/i.test(process.env.MIHOMO_DIRECT_EXEC || "")) {
+    return { command: "bash", args: ["-s"], env: process.env };
   }
-
-  args = [...args, `${targetConfig.user}@${targetConfig.host}`, "bash -s"];
-  return { command, args, env };
+  const nsenter = process.env.NSENTER_BIN || "/usr/bin/nsenter";
+  if (existsSync(nsenter)) {
+    return {
+      command: nsenter,
+      args: ["--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "bash", "-s"],
+      env: process.env,
+    };
+  }
+  return { command: "bash", args: ["-s"], env: process.env };
 }
 
 function runScriptProcess(command, args, script, timeoutMs, env = process.env) {

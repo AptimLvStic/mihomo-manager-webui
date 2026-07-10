@@ -29,6 +29,7 @@ body {
   font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+.auth-screen,
 .setup-screen {
   min-height: 100vh;
   display: grid;
@@ -36,6 +37,7 @@ body {
   padding: 24px;
 }
 
+.auth-panel,
 .setup-panel {
   width: min(860px, 100%);
   border: 1px solid var(--line);
@@ -45,6 +47,7 @@ body {
   padding: 24px;
 }
 
+.auth-brand,
 .setup-heading {
   display: flex;
   align-items: flex-start;
@@ -988,4 +991,30 @@ label span {
   .segmented > * {
     flex: 1 1 160px;
   }
+}
+
+
+.auth-panel {
+  width: min(440px, 100%);
+}
+
+.auth-brand h1 {
+  margin: 0;
+  font-size: 28px;
+}
+
+.auth-copy,
+.auth-hint {
+  color: var(--muted);
+  margin: 0 0 16px;
+}
+
+.auth-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+}
+
+.auth-switch {
+  width: 100%;
+  margin-top: 12px;
 }

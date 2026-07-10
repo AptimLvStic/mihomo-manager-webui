@@ -5,31 +5,26 @@ services:
     container_name: mihomo-manager-webui
     restart: unless-stopped
     init: true
+    pid: host
+    privileged: true
     ports:
-      - "${MIHOMO_BIND:-0.0.0.0}:5178:5178"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "${MIHOMO_MANAGER_BIND:-127.0.0.1}:5178:5178"
     environment:
       NODE_ENV: production
       LISTEN_HOST: 0.0.0.0
       PORT: 5178
-      SERVER_CONFIG_FILE: /app/data/server.config.json
-      MIHOMO_AUTH: ${MIHOMO_AUTH:-}
-      MIHOMO_HOST: ${MIHOMO_HOST:-}
-      MIHOMO_SSH_PORT: ${MIHOMO_SSH_PORT:-22}
-      MIHOMO_USER: ${MIHOMO_USER:-root}
-      MIHOMO_PASSWORD: ${MIHOMO_PASSWORD:-}
+      DATA_DIR: /app/data
+      MIHOMO_MANAGER_HOST_PROJECT_DIR: ${MIHOMO_MANAGER_HOST_PROJECT_DIR:-/data/mihomo-manager-webui}
+      AUTH_ALLOW_REGISTRATION: ${AUTH_ALLOW_REGISTRATION:-}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
     volumes:
       - ./data:/app/data
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5178/api/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5178/api/auth/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
