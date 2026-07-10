@@ -1325,164 +1325,19 @@ function updateFunctionBody() {
     if [ "$WEBUI_LANG" = zh ]; then printf '[错误] 订阅链接未设置。\n' >&2; else printf '[ERROR] Subscription URL is not set.\n' >&2; fi
     exit 1
   fi
-  if ! command -v curl >/dev/null 2>&1; then
-    if [ "$WEBUI_LANG" = zh ]; then printf '[错误] 缺少命令：curl\n' >&2; else printf '[ERROR] Missing command: curl\n' >&2; fi
-    exit 1
-  fi
-  if ! command -v python3 >/dev/null 2>&1; then
-    if [ "$WEBUI_LANG" = zh ]; then printf '[错误] 缺少命令：python3\n' >&2; else printf '[ERROR] Missing command: python3\n' >&2; fi
-    exit 1
-  fi
-  bin_path=$(mihomo_bin) || {
-    if [ "$WEBUI_LANG" = zh ]; then printf '[错误] 未找到 mihomo。\n' >&2; else printf '[ERROR] Mihomo binary not found.\n' >&2; fi
-    exit 1
-  }
-  install -d -m 700 "$CONFIG_DIR"
-  tmp_dir=$(mktemp -d)
-  trap 'rm -rf "$tmp_dir"' EXIT
-  raw_file=$tmp_dir/subscription.yaml
-  cfg_file=$tmp_dir/config.yaml
-  if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 正在拉取订阅...\n'; else printf '[INFO] Downloading subscription...\n'; fi
-  curl_args=(-fsSL --retry 3 --connect-timeout 15 --max-time 90 -H 'Accept: */*' -A "$SUBSCRIPTION_UA")
-  if [ "$SUBSCRIPTION_USE_SYSTEM_PROXY" = 1 ]; then
-    curl_args+=(--proxy "$HTTP_PROXY_URL")
-  fi
-  curl "\${curl_args[@]}" "$SUBSCRIPTION_URL" -o "$raw_file"
-  python3 - "$raw_file" "$cfg_file" "$CONFIG_FILE" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-src = Path(sys.argv[1])
-dst = Path(sys.argv[2])
-current = Path(sys.argv[3])
-text = src.read_text(encoding="utf-8", errors="ignore")
-if "proxies:" not in text:
-    raise SystemExit("subscription does not look like Clash YAML")
-
-managed_scalars = {
-    "mode", "port", "socks-port", "mixed-port", "redir-port", "tproxy-port",
-    "allow-lan", "bind-address", "external-controller", "log-level"
-}
-
-def strip_managed_blocks(source_text):
-    lines = source_text.splitlines()
-    out = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if not line[:1].isspace():
-            m = re.match(r"^([A-Za-z0-9_-]+)\s*:", line)
-            if m and m.group(1) in managed_scalars:
-                i += 1
-                continue
-            if m and m.group(1) == "tun":
-                i += 1
-                while i < len(lines):
-                    next_line = lines[i]
-                    if next_line and not next_line[:1].isspace() and re.match(r"^[A-Za-z0-9_-]+\s*:", next_line):
-                        break
-                    i += 1
-                continue
-        out.append(line.rstrip())
-        i += 1
-    return out
-
-def current_prefix():
-    existing = current.read_text(encoding="utf-8", errors="ignore") if current.exists() else ""
-    scalars = {}
-    tun_block = []
-    lines = existing.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if not line[:1].isspace():
-            m = re.match(r"^([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*(?:#.*)?$", line)
-            if m and m.group(1) in managed_scalars:
-                scalars[m.group(1)] = m.group(2).strip()
-                i += 1
-                continue
-            if m and m.group(1) == "tun":
-                tun_block = [line.rstrip()]
-                i += 1
-                while i < len(lines):
-                    next_line = lines[i]
-                    if next_line and not next_line[:1].isspace() and re.match(r"^[A-Za-z0-9_-]+\s*:", next_line):
-                        break
-                    tun_block.append(next_line.rstrip())
-                    i += 1
-                continue
-        i += 1
-
-    prefix = []
-    prefix.append(f"mode: {scalars.get('mode', 'Rule') or 'Rule'}")
-    port_keys = ["port", "socks-port", "mixed-port", "redir-port", "tproxy-port"]
-    if any(key in scalars for key in port_keys):
-        for key in port_keys:
-            if key in scalars and scalars[key]:
-                prefix.append(f"{key}: {scalars[key]}")
-    else:
-        prefix.extend(["mixed-port: 7890", "socks-port: 7891"])
-    allow_lan = scalars.get('allow-lan', 'false') or 'false'
-    bind_address = scalars.get('bind-address', '127.0.0.1') or '127.0.0.1'
-    normalized_bind = str(bind_address).strip().strip("'").strip('"').lower()
-    if normalized_bind not in {"127.0.0.1", "localhost", "::1"} and not normalized_bind.startswith("127."):
-        allow_lan = "true"
-    prefix.append(f"allow-lan: {allow_lan}")
-    prefix.append(f"bind-address: {bind_address}")
-    prefix.append(f"log-level: {scalars.get('log-level', 'info') or 'info'}")
-    prefix.append(f"external-controller: {scalars.get('external-controller', '127.0.0.1:9090') or '127.0.0.1:9090'}")
-    if tun_block:
-        prefix.extend(tun_block)
-    return prefix
-
-out = strip_managed_blocks(text)
-while out and not out[0].strip():
-    out.pop(0)
-dst.write_text("\n".join(current_prefix() + [""] + out).rstrip() + "\n", encoding="utf-8")
-PY
-  check_log=/tmp/mihomo-config-check.log
-  if "$bin_path" -t -d "$CONFIG_DIR" -f "$cfg_file" >"$check_log" 2>&1; then
-    install -m 600 "$raw_file" "$RAW_FILE"
-    if [ -f "$CONFIG_FILE" ]; then
-      cp -a "$CONFIG_FILE" "$CONFIG_FILE.backup.$(date +%Y%m%d%H%M%S)"
-    fi
-    install -m 600 "$cfg_file" "$CONFIG_FILE"
-  else
-    cat "$check_log" >&2
-    exit 1
-  fi
-  reloaded=0
-  if [ "$SUBSCRIPTION_USE_KERNEL_UPDATE" = 1 ] && systemctl is-active --quiet mihomo.service 2>/dev/null; then
-    if python3 - "$CONFIG_FILE" <<'PY'
-import json
-import sys
-import urllib.request
-
-body = json.dumps({"path": sys.argv[1], "force": True}).encode("utf-8")
-request = urllib.request.Request(
-    "http://127.0.0.1:9090/configs",
-    data=body,
-    method="PUT",
-    headers={"Content-Type": "application/json"},
-)
-with urllib.request.urlopen(request, timeout=10) as resp:
-    resp.read()
-PY
-    then
-      reloaded=1
-      if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 已通过 Mihomo 内核热加载配置。\n'; else printf '[INFO] Mihomo config reloaded through the core controller.\n'; fi
-    fi
-  fi
-  if [ "$reloaded" != 1 ]; then
-    if systemctl is-active --quiet mihomo.service 2>/dev/null; then
-      systemctl restart mihomo.service
+  updater=/usr/local/sbin/update-mihomo-subscription
+  project_updater=/data/mihomo-manager-webui/scripts/update-mihomo-subscription
+  if [ ! -x "$updater" ]; then
+    if [ -r "$project_updater" ]; then
+      install -m 755 "$project_updater" "$updater"
     else
-      systemctl start mihomo.service
+      if [ "$WEBUI_LANG" = zh ]; then printf '[错误] 缺少统一订阅更新脚本：%s\n' "$updater" >&2; else printf '[ERROR] Missing unified subscription updater: %s\n' "$updater" >&2; fi
+      exit 1
     fi
   fi
-  sleep 2
-  if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 订阅更新完成。\n'; else printf '[INFO] Subscription update finished.\n'; fi
+  if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 正在更新订阅，并保留本地配置改动...\n'; else printf '[INFO] Updating subscription while preserving local config changes...\n'; fi
+  "$updater"
+  if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 订阅更新完成，本地配置改动已保留。\n'; else printf '[INFO] Subscription update finished; local config changes were preserved.\n'; fi
 }`;
 }
 
@@ -1582,9 +1437,7 @@ PY
 function updateScript() {
   return `${remoteBase()}
 ${updateFunctionBody()}
-${selectFunctionBody()}
 update_subscription
-select_working_proxy || true
 `;
 }
 
@@ -1592,7 +1445,6 @@ function setSubscriptionUrlScript(url) {
   const encoded = Buffer.from(url, "utf8").toString("base64");
   return `${remoteBase()}
 ${updateFunctionBody()}
-${selectFunctionBody()}
 new_url=$(printf '%s' ${shellQuote(encoded)} | base64 -d)
 case "$new_url" in
   http://*|https://*) ;;
@@ -1602,7 +1454,6 @@ load_subscription_env
 write_subscription_env "$new_url" "$SUBSCRIPTION_UA" "$SUBSCRIPTION_NAME" "$SUBSCRIPTION_DESCRIPTION" "$SUBSCRIPTION_ALLOW_AUTO_UPDATE" "$SUBSCRIPTION_USE_SYSTEM_PROXY" "$SUBSCRIPTION_USE_KERNEL_UPDATE"
 if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 订阅链接已保存。\n'; else printf '[INFO] Subscription URL saved.\n'; fi
 update_subscription
-select_working_proxy || true
 `;
 }
 
@@ -1610,7 +1461,6 @@ function setSubscriptionUaScript(ua) {
   const encoded = Buffer.from(ua, "utf8").toString("base64");
   return `${remoteBase()}
 ${updateFunctionBody()}
-${selectFunctionBody()}
 new_ua=$(printf '%s' ${shellQuote(encoded)} | base64 -d)
 if [ -z "$new_ua" ]; then
   printf '[ERROR] User-Agent cannot be empty.\n' >&2
@@ -1620,7 +1470,6 @@ load_subscription_env
 write_subscription_env "$SUBSCRIPTION_URL" "$new_ua" "$SUBSCRIPTION_NAME" "$SUBSCRIPTION_DESCRIPTION" "$SUBSCRIPTION_ALLOW_AUTO_UPDATE" "$SUBSCRIPTION_USE_SYSTEM_PROXY" "$SUBSCRIPTION_USE_KERNEL_UPDATE"
 if [ "$WEBUI_LANG" = zh ]; then printf '[信息] 订阅 User-Agent 已保存。\n'; else printf '[INFO] Subscription User-Agent saved.\n'; fi
 update_subscription
-select_working_proxy || true
 `;
 }
 

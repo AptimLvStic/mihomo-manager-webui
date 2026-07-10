@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+ENV_FILE=/etc/mihomo/subscription.env
+CONFIG=/etc/mihomo/config.yaml
+RAW=/etc/mihomo/subscription.raw.yaml
+CHECK_LOG=/tmp/mihomo-config-check.log
+HTTP_PROXY_URL=${HTTP_PROXY_URL:-http://127.0.0.1:7890}
+[ -r "$ENV_FILE" ] || { echo "missing $ENV_FILE" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+SUBSCRIPTION_UA=${SUBSCRIPTION_UA:-ClashMetaForAndroid/2.10.1}
+SUBSCRIPTION_USE_SYSTEM_PROXY=${SUBSCRIPTION_USE_SYSTEM_PROXY:-0}
+SUBSCRIPTION_USE_KERNEL_UPDATE=${SUBSCRIPTION_USE_KERNEL_UPDATE:-0}
+tmpdir=$(mktemp -d)
+cleanup() { rm -rf "$tmpdir"; }
+trap cleanup EXIT
+raw="$tmpdir/subscription.yaml"
+cfg="$tmpdir/config.yaml"
+curl_args=(-fsSL --retry 3 --connect-timeout 15 --max-time 90 -H 'Accept: */*' -A "$SUBSCRIPTION_UA")
+case "$SUBSCRIPTION_USE_SYSTEM_PROXY" in 1|true|yes|on) curl_args+=(--proxy "$HTTP_PROXY_URL") ;; esac
+curl "${curl_args[@]}" "$SUBSCRIPTION_URL" -o "$raw"
+python3 - "$raw" "$cfg" "$CONFIG" "$RAW" <<'PY'
+import copy
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+import yaml
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+current = Path(sys.argv[3])
+previous_raw = Path(sys.argv[4])
+
+class ClashLoader(yaml.SafeLoader):
+    pass
+
+class ClashDumper(yaml.SafeDumper):
+    def ignore_aliases(self, data):
+        return True
+
+def construct_unknown(loader, tag_suffix, node):
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node, deep=True)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_scalar(node)
+
+ClashLoader.add_multi_constructor('', construct_unknown)
+
+def load_yaml(path):
+    if not path.exists():
+        return {}
+    text = path.read_text(encoding='utf-8', errors='ignore')
+    if not text.strip():
+        return {}
+    data = yaml.load(text, Loader=ClashLoader)
+    return data if isinstance(data, dict) else {}
+
+def list_value(data, key):
+    value = data.get(key)
+    return value if isinstance(value, list) else []
+
+def canonical(value):
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+def local_rule_values(current_data, previous_data):
+    current_rules = list_value(current_data, 'rules')
+    previous_rules = Counter(canonical(item) for item in list_value(previous_data, 'rules'))
+    local = []
+    for item in current_rules:
+        key = canonical(item)
+        if previous_rules[key] > 0:
+            previous_rules[key] -= 1
+        else:
+            local.append(item)
+    return local
+
+def merge_rules(current_data, previous_data, new_data):
+    new_rules = list(list_value(new_data, 'rules'))
+    existing = Counter(canonical(item) for item in new_rules)
+    preserved = []
+    for item in local_rule_values(current_data, previous_data):
+        key = canonical(item)
+        if existing[key] > 0:
+            existing[key] -= 1
+            continue
+        preserved.append(item)
+    return preserved + new_rules
+
+new_data = load_yaml(src)
+if 'proxies' not in new_data:
+    raise SystemExit('subscription does not look like Clash YAML: missing proxies')
+
+current_data = load_yaml(current)
+previous_data = load_yaml(previous_raw)
+
+if current_data:
+    result = copy.deepcopy(current_data)
+else:
+    result = copy.deepcopy(new_data)
+    result.setdefault('mode', 'Rule')
+    result.setdefault('mixed-port', 7890)
+    result.setdefault('socks-port', 7891)
+    result.setdefault('allow-lan', True)
+    result.setdefault('bind-address', '0.0.0.0')
+    result.setdefault('log-level', 'info')
+    result.setdefault('external-controller', '127.0.0.1:9090')
+
+# Only these top-level sections are treated as subscription-owned content.
+# Everything else in /etc/mihomo/config.yaml is preserved as local config.
+for key in ('proxies', 'proxy-groups', 'proxy-providers', 'rule-providers'):
+    if key in new_data:
+        result[key] = copy.deepcopy(new_data[key])
+    elif key in result:
+        result.pop(key, None)
+
+if 'rules' in new_data or 'rules' in result:
+    merged = merge_rules(current_data, previous_data, new_data)
+    if merged:
+        result['rules'] = merged
+    else:
+        result.pop('rules', None)
+
+text = yaml.dump(result, Dumper=ClashDumper, allow_unicode=True, sort_keys=False, default_flow_style=False)
+dst.write_text(text.rstrip() + '\n', encoding='utf-8')
+
+PY
+if /usr/local/bin/mihomo -t -d /etc/mihomo -f "$cfg" >"$CHECK_LOG" 2>&1; then
+  install -m 600 "$raw" "$RAW"
+  if [ -f "$CONFIG" ]; then
+    cp -a "$CONFIG" "$CONFIG.backup.$(date +%Y%m%d%H%M%S)"
+  fi
+  install -m 600 "$cfg" "$CONFIG"
+else
+  cat "$CHECK_LOG" >&2
+  exit 1
+fi
+reloaded=0
+case "$SUBSCRIPTION_USE_KERNEL_UPDATE" in
+  1|true|yes|on)
+    if systemctl is-active --quiet mihomo 2>/dev/null; then
+      if python3 - "$CONFIG" <<'PY'
+import json
+import sys
+import urllib.request
+body = json.dumps({"path": sys.argv[1], "force": True}).encode("utf-8")
+request = urllib.request.Request(
+    "http://127.0.0.1:9090/configs",
+    data=body,
+    method="PUT",
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    response.read()
+PY
+      then
+        reloaded=1
+      fi
+    fi
+    ;;
+esac
+if [ "$reloaded" != 1 ]; then
+  if systemctl is-active --quiet mihomo 2>/dev/null; then
+    systemctl restart mihomo
+  else
+    systemctl start mihomo
+  fi
+fi
