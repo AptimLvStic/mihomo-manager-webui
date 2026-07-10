@@ -23,7 +23,7 @@ The image is based on `node:22-bookworm-slim` and installs:
 - `ca-certificates`
 - `util-linux`, for `nsenter`
 
-`nsenter` is used to execute management scripts in the host namespace. That is why the Compose file uses host PID namespace and elevated privileges.
+`nsenter` is used only when `MIHOMO_LOCAL_RUNNER=nsenter`, typically for Docker managing the host namespace. Direct host Node.js deployment should use `MIHOMO_LOCAL_RUNNER=direct`.
 
 ## Mihomo Assumptions
 

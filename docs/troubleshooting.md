@@ -14,21 +14,21 @@ Check that port `5178` is not already used:
 ss -ltnp | grep ':5178'
 ```
 
-## Login or Registration Does Not Work
+## Login Does Not Work
 
-Check auth status:
+Check that `WEBUI_USERNAME`, `WEBUI_PASSWORD`, and `WEBUI_SESSION_SECRET` are set in the service environment. Then check auth status:
 
 ```bash
 curl -i http://127.0.0.1:5178/api/auth/status
 ```
 
-Check the auth data file:
+If optional registered users are enabled, check the auth data file:
 
 ```bash
 ls -l data/auth.json
 ```
 
-If you need to reset all users, stop the container and move the file away:
+If you need to reset optional registered users, stop the container and move the file away:
 
 ```bash
 docker compose down
@@ -36,7 +36,7 @@ mv data/auth.json data/auth.json.backup.$(date +%Y%m%d%H%M%S)
 docker compose up -d
 ```
 
-Then register the first user again.
+Then restart and log in with the environment-provided administrator account.
 
 ## Local Management Permission Errors
 

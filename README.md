@@ -1,38 +1,34 @@
 # Mihomo Manager WebUI
 
-Mihomo Manager WebUI is a local-first web console for managing a Linux host running the Mihomo core. It focuses on subscription management, proxy group selection, node delay testing, rule insertion, service control, proxy entry configuration, and common system proxy/proxychains operations.
+Mihomo Manager WebUI is a web console for managing Mihomo on Linux. It covers the main operational flow: add a subscription, test and select nodes, configure Mihomo proxy modes and ports, then operate the service from a browser.
 
-The project no longer uses an SSH management bridge. The Docker deployment manages the local Docker host through `nsenter`, so it is intended to be deployed on the same Linux host that runs Mihomo.
+## Scope
 
-## Features
+Core features:
 
-- Web login with first-user registration.
-- Local host management only; no SSH key or SSH password mode.
-- Subscription settings and update workflow.
-- Subscription updates preserve local Mihomo configuration changes.
-- Proxy group and node view with streaming delay test results.
-- Mihomo inbound configuration: HTTP, SOCKS5, Mixed, Redir, TProxy and TUN.
-- Rule insertion with policy selection.
-- systemd service control for `mihomo.service` and subscription timer inspection.
-- System proxy and optional proxychains configuration helpers.
+- Web login with `HttpOnly` cookie sessions.
+- Local mode by default: no SSH key or SSH password is required.
+- Optional remote mode for advanced deployments.
+- Subscription management and subscription updates that preserve local non-subscription config.
+- Proxy group view, node cards, single-node delay tests, and current-group delay tests.
+- Mihomo config for Rule / Global / Direct, Mixed / HTTP / SOCKS, bind address, LAN access, and advanced TUN/Redir/TProxy settings.
+- Operations page for start/stop/restart, logs, timers, ports, and advanced rule insertion.
 
 ## Requirements
 
-See [docs/dependencies.md](docs/dependencies.md) for the full dependency list.
+See [docs/dependencies.md](docs/dependencies.md).
 
 Minimum host requirements:
 
 - Linux with systemd.
-- Docker Engine and Docker Compose v2.
-- Mihomo installed on the host, usually `/usr/local/bin/mihomo`.
-- Mihomo config at `/etc/mihomo/config.yaml`.
-- Python 3 and PyYAML on the host, usually package `python3-yaml`.
-- `curl`, `iproute2`/`ss`, and standard GNU utilities.
-- Optional: `proxychains4` if you want WebUI-managed proxychains configuration.
+- Node.js 20+ for direct host deployment, or Docker Engine + Docker Compose v2 for container deployment.
+- Mihomo installed on the managed host.
+- Python 3 + PyYAML on the managed host.
+- `curl`, `ss` from iproute2, and standard shell utilities.
 
-## Docker Compose Deployment
+## Recommended Deployment: Host Node.js
 
-Clone the repository on the same host that runs Mihomo:
+This is the cleanest local mode because `MIHOMO_MODE=local` executes management scripts directly on the host.
 
 ```bash
 git clone https://github.com/AptimLvStic/mihomo-manager-webui.git /opt/mihomo-manager-webui
@@ -40,57 +36,108 @@ cd /opt/mihomo-manager-webui
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` and set strong values:
 
 ```env
 MIHOMO_MANAGER_BIND=127.0.0.1
-MIHOMO_MANAGER_HOST_PROJECT_DIR=/opt/mihomo-manager-webui
-AUTH_ALLOW_REGISTRATION=false
-SESSION_TTL_HOURS=24
-COOKIE_SECURE=false
+WEBUI_USERNAME=admin
+WEBUI_PASSWORD=replace-with-a-strong-password
+WEBUI_SESSION_SECRET=replace-with-a-long-random-secret
+WEBUI_COOKIE_SECURE=false
+MIHOMO_MODE=local
+MIHOMO_LOCAL_RUNNER=direct
 ```
 
-Start the service:
+Start:
 
 ```bash
+set -a
+. ./.env
+set +a
+npm start
+```
+
+Smoke test:
+
+```bash
+curl http://127.0.0.1:5178/api/health
+curl -i http://127.0.0.1:5178/api/config
+npm run check
+npm test
+```
+
+Expected unauthenticated config response:
+
+```text
+HTTP/1.1 401 Unauthorized
+```
+
+## Docker Compose Deployment
+
+Docker is supported, but managing the Docker host from inside a container requires elevated permissions. The provided Compose file uses local mode with `MIHOMO_LOCAL_RUNNER=nsenter` for this reason.
+
+```bash
+cp .env.example .env
+# edit .env first
 docker compose up -d --build
 docker compose ps
 ```
 
-Open the WebUI:
-
-```text
-http://127.0.0.1:5178
-```
-
-The first user can register from the login page. After one user exists, public registration is disabled unless `AUTH_ALLOW_REGISTRATION=true` is set.
-
-## Binding and Reverse Proxy
-
-For production, prefer binding the WebUI to localhost and exposing it through a TLS reverse proxy:
+Required login variables:
 
 ```env
-MIHOMO_MANAGER_BIND=127.0.0.1
-COOKIE_SECURE=true
+WEBUI_USERNAME=admin
+WEBUI_PASSWORD=replace-with-a-strong-password
+WEBUI_SESSION_SECRET=replace-with-a-long-random-secret
 ```
 
-Example Nginx location:
+Healthcheck uses the public endpoint:
 
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:5178;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
+```bash
+curl http://127.0.0.1:5178/api/health
 ```
 
-If you bind to `0.0.0.0`, restrict access with firewall rules or a private network. This application has host-management privileges and should not be exposed as an unauthenticated public service.
+## Local and Remote Modes
+
+Local mode:
+
+```env
+MIHOMO_MODE=local
+```
+
+Local mode does not require `MIHOMO_HOST`, `MIHOMO_AUTH`, `MIHOMO_KEY`, or `MIHOMO_PASSWORD`.
+
+Remote mode is optional and intended for advanced deployments:
+
+```env
+MIHOMO_MODE=remote
+MIHOMO_HOST=server.example.com
+MIHOMO_USER=root
+MIHOMO_AUTH=key
+MIHOMO_KEY_PATH=/absolute/path/to/private_key
+```
+
+Remote key mode can use the optional Compose overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ssh-key.yml up -d --build
+```
+
+## Public Exposure Requirements
+
+`0.0.0.0:5178` can be used, but do not leave this WebUI exposed on plain public HTTP for long-term production use.
+
+Recommended controls:
+
+- Use a strong `WEBUI_PASSWORD`.
+- Keep `WEBUI_SESSION_SECRET` fixed and private.
+- Restrict source IPs with firewall or cloud security groups.
+- Prefer HTTPS reverse proxy and set `WEBUI_COOKIE_SECURE=true`.
+- Keep Mihomo controller bound to `127.0.0.1:9090`.
 
 ## Important Paths
 
-Host paths managed by the WebUI:
+Managed host paths:
 
 ```text
 /etc/mihomo/config.yaml
@@ -104,50 +151,31 @@ Host paths managed by the WebUI:
 /usr/local/sbin/update-mihomo-subscription
 ```
 
-Application data path:
+Application data:
 
 ```text
 ./data/auth.json
 ```
 
-`auth.json` stores usernames and password hashes. Do not commit `data/`.
+Do not commit `.env`, `data/`, subscription URLs, node credentials, cookies, SSH keys, or Mihomo configs containing private nodes.
 
-## Security Notes
-
-Read [docs/security.md](docs/security.md) before exposing the WebUI beyond localhost. The short version:
-
-- The container needs elevated host-management privileges when deployed with Docker.
-- Treat WebUI admin access as equivalent to root on the host.
-- Use TLS, firewall restrictions, and strong passwords.
-- Keep subscription URLs, cookies, generated data, and Mihomo configs out of Git.
-
-## Troubleshooting
-
-See [docs/troubleshooting.md](docs/troubleshooting.md).
-
-Common checks:
+## Verification Checklist
 
 ```bash
-docker compose ps
-docker logs --tail=100 mihomo-manager-webui
-curl -fsS http://127.0.0.1:5178/api/auth/status | jq
-systemctl status mihomo --no-pager
-journalctl -u mihomo -n 100 --no-pager
-```
-
-## Development Checks
-
-```bash
+curl http://127.0.0.1:5178/api/health
+curl -i http://127.0.0.1:5178/api/config
 node --check server.js
 node --check public/app.js
 bash -n scripts/update-mihomo-subscription
 docker compose config --quiet
 ```
 
----
+After login:
 
-## English Quick Start
+```bash
+npm test
+```
 
-This project is a local Mihomo management WebUI for Linux hosts. It does not use SSH. Deploy it on the same host that runs Mihomo, start with `docker compose up -d --build`, register the first admin user in the browser, then manage subscriptions, proxy groups, node delay tests, rules, service state, and Mihomo inbound ports from the UI.
+## Troubleshooting
 
-Read `docs/dependencies.md`, `docs/security.md`, and `docs/troubleshooting.md` before production use.
+See [docs/troubleshooting.md](docs/troubleshooting.md).

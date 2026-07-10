@@ -17,14 +17,11 @@ const state = {
 };
 
 const titles = {
-  dashboard: "仪表盘",
-  proxies: "代理",
+  dashboard: "概览",
+  proxies: "节点",
   subscription: "订阅",
-  rules: "规则",
-  service: "服务",
-  proxy: "系统",
-  logs: "日志",
-  settings: "设置",
+  proxy: "配置",
+  ops: "运维",
 };
 
 const outputTargets = {
@@ -85,6 +82,11 @@ document.querySelector("#authForm").addEventListener("submit", async (event) => 
   await submitAuth(event.submitter);
 });
 
+document.querySelector("#adminRegisterForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await submitAdminRegistration(event.submitter);
+});
+
 document.body.addEventListener("click", async (event) => {
   const runButton = event.target.closest("[data-run]");
   if (runButton) {
@@ -142,6 +144,7 @@ document.querySelector("#ruleForm").addEventListener("submit", async (event) => 
     toast("请选择代理策略");
     return;
   }
+  if (!confirmDangerousAction(event.submitter)) return;
   const result = await postJson("/api/rules", { type, payload, policy }, "rules");
   if (result?.ok) {
     document.querySelector("#rulePayload").value = "";
@@ -221,6 +224,7 @@ function showAuth(mode = "login") {
 function showApp() {
   document.querySelector("#authScreen").classList.add("is-hidden");
   document.querySelector("#appShell").classList.remove("is-hidden");
+  updateAdminRegistrationState();
 }
 
 function setAuthMode(mode) {
@@ -236,7 +240,7 @@ function setAuthMode(mode) {
   document.querySelector("#authToggleBtn").classList.toggle("is-hidden", !state.registrationOpen);
   document.querySelector("#authToggleBtn").textContent = isRegister ? "已有账号，去登录" : "创建账号";
   document.querySelector("#authHint").textContent = state.registrationOpen
-    ? "首个账号可直接注册；后续是否开放注册由部署环境变量控制。"
+    ? "注册功能仅供已登录管理员新增账号；是否开启由部署环境变量控制。"
     : "注册已关闭，请使用已有账号登录。";
 }
 
@@ -282,6 +286,67 @@ async function logout() {
   }
 }
 
+async function submitAdminRegistration(button = null) {
+  if (!state.registrationOpen) {
+    toast("注册功能未开启", "error", "设置 AUTH_ALLOW_REGISTRATION=true 并重启服务后，已登录管理员才能新增账号。");
+    return;
+  }
+  const username = document.querySelector("#adminRegisterUsername").value.trim();
+  const password = document.querySelector("#adminRegisterPassword").value;
+  const confirm = document.querySelector("#adminRegisterConfirm").value;
+  if (!username || !password) {
+    toast("请输入新管理员用户名和密码", "error");
+    return;
+  }
+  if (password !== confirm) {
+    toast("两次输入的密码不一致", "error");
+    return;
+  }
+  if (!confirmDangerousAction(button)) return;
+  const result = await postJson("/api/auth/register", { username, password }, "settings", button);
+  if (result?.ok) {
+    document.querySelector("#adminRegisterUsername").value = "";
+    document.querySelector("#adminRegisterPassword").value = "";
+    document.querySelector("#adminRegisterConfirm").value = "";
+  }
+}
+
+function updateAdminRegistrationState() {
+  const fields = [
+    "#adminRegisterUsername",
+    "#adminRegisterPassword",
+    "#adminRegisterConfirm",
+    "#adminRegisterSubmit",
+  ];
+  for (const selector of fields) {
+    const element = document.querySelector(selector);
+    if (element) element.disabled = state.busy || !state.registrationOpen;
+  }
+  const hint = document.querySelector("#adminRegisterHint");
+  if (hint) {
+    hint.textContent = state.registrationOpen
+      ? "注册已开启；新增账号将拥有 WebUI 管理权限。"
+      : "注册已关闭；如需新增账号，请设置 AUTH_ALLOW_REGISTRATION=true 后重启服务。";
+  }
+}
+
+function resetRuntimeState() {
+  state.proxyData = null;
+  state.proxyDelays = {};
+  state.mihomoProxySettings = null;
+  state.subscriptionSettings = null;
+  state.selectingProxyNodes.clear();
+  state.testingDelayNodes.clear();
+  state.testingDelays = false;
+  state.busy = false;
+}
+
+function confirmDangerousAction(element) {
+  const message = element?.dataset?.confirm;
+  if (!message) return true;
+  return window.confirm(message);
+}
+
 function setView(view) {
   state.activeView = view;
   document.querySelectorAll(".view").forEach((element) => {
@@ -294,7 +359,7 @@ function setView(view) {
   if (view === "proxies" && !state.proxyData) {
     loadProxies();
   }
-  if (view === "rules") {
+  if (view === "ops") {
     loadRulePolicies();
   }
   if (view === "proxy" && !state.mihomoProxySettings) {
@@ -463,6 +528,7 @@ function readCoreProxySettings() {
 }
 
 async function saveCoreProxySettings(button = null) {
+  if (!confirmDangerousAction(button)) return;
   const body = readCoreProxySettings();
   const enabled = Object.values(body.inbounds).filter((item) => item.enabled);
   if (!enabled.length && !body.tun.enabled) {
@@ -515,6 +581,7 @@ async function runCommand(command, button = null) {
 }
 
 async function runAction(action, button = null) {
+  if (!confirmDangerousAction(button || document.querySelector(`[data-action="${action}"]`))) return;
   const target = actionTarget[action] || state.activeView;
   const result = await postJson("/api/action", { action }, target, button);
   if (result?.ok) {
@@ -554,7 +621,9 @@ async function requestJson(url, options = {}) {
       const text = await response.text();
       const payload = text ? JSON.parse(text) : {};
       if (response.status === 401 && !skipAuthRedirect) {
+        resetRuntimeState();
         showAuth("login");
+        throw new Error(payload.error || "登录已过期，请重新登录。");
       }
       if (!response.ok && payload.ok !== false) {
         payload.ok = false;
@@ -634,6 +703,12 @@ function friendlyError(payload = {}) {
     .join("\n\n")
     .trim();
   const source = detail.toLowerCase();
+  if (/systemctl: command not found|systemctl.*not found/i.test(detail)) {
+    return { title: "当前环境缺少 systemctl，无法管理 Mihomo 服务。", detail };
+  }
+  if (/mihomo.*not found|未找到 mihomo|Mihomo binary not found/i.test(detail)) {
+    return { title: "未找到 Mihomo 内核，请确认 mihomo 已安装并在 PATH 或 /usr/local/bin/mihomo。", detail };
+  }
   if (/port\s+7890.*in use|address already in use|bind: address already in use/i.test(detail)) {
     return {
       title: "端口 7890 已被占用，请检查是否有其他代理服务正在运行。",
@@ -1216,6 +1291,7 @@ function setBusy(busy) {
   if (document.querySelector("#coreProxyForm")) {
     updateInboundPortStates();
   }
+  updateAdminRegistrationState();
 }
 
 function setButtonLoading(button, loading) {

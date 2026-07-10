@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 const rootDir = resolve(".");
 const publicDir = join(rootDir, "public");
@@ -12,7 +12,16 @@ const port = Number(process.env.PORT || 5178);
 const listenHost = process.env.LISTEN_HOST || "127.0.0.1";
 const sessionCookieName = "mihomo_manager_session";
 const sessionTtlMs = Math.max(Number(process.env.SESSION_TTL_HOURS || 24), 1) * 60 * 60 * 1000;
-const sessions = new Map();
+const webuiUsername = String(process.env.WEBUI_USERNAME || "admin").trim() || "admin";
+const webuiPassword = String(process.env.WEBUI_PASSWORD || "");
+const sessionSecret = String(process.env.WEBUI_SESSION_SECRET || "");
+const loginFailures = new Map();
+if (!webuiPassword) {
+  throw new Error("WEBUI_PASSWORD is required.");
+}
+if (!sessionSecret) {
+  throw new Error("WEBUI_SESSION_SECRET is required.");
+}
 mkdirSync(dataDir, { recursive: true });
 let config = loadConfig();
 
@@ -66,11 +75,37 @@ createServer(async (req, res) => {
 });
 
 function loadConfig() {
+  const mode = String(process.env.MIHOMO_MODE || "local").toLowerCase() === "remote" ? "remote" : "local";
+  if (mode === "local") {
+    return {
+      configured: true,
+      mode,
+      targetLabel: "Local Mihomo Host",
+      runtimeLabel: "本地管理通道",
+    };
+  }
+
+  const identityFile = process.env.MIHOMO_KEY || process.env.MIHOMO_KEY_FILE || "";
+  const password = process.env.MIHOMO_PASSWORD || "";
+  const auth = String(process.env.MIHOMO_AUTH || (password && !identityFile ? "password" : "key")).toLowerCase();
+  const host = process.env.MIHOMO_HOST || "";
+  const port = Number(process.env.MIHOMO_SSH_PORT || 22);
+  const user = process.env.MIHOMO_USER || "root";
+  if (!host) throw new Error("MIHOMO_HOST is required when MIHOMO_MODE=remote.");
+  if (!["key", "password"].includes(auth)) throw new Error("MIHOMO_AUTH must be key or password.");
+  if (auth === "key" && !identityFile) throw new Error("MIHOMO_KEY or MIHOMO_KEY_FILE is required when MIHOMO_AUTH=key.");
+  if (auth === "password" && !password) throw new Error("MIHOMO_PASSWORD is required when MIHOMO_AUTH=password.");
   return {
     configured: true,
-    mode: "local",
-    targetLabel: "Local Mihomo Host",
-    runtimeLabel: "本地管理通道",
+    mode,
+    host,
+    port,
+    user,
+    auth,
+    identityFile,
+    password,
+    targetLabel: `${host}:${port}`,
+    runtimeLabel: auth === "password" ? "SSH 密码管理通道" : "SSH 密钥管理通道",
   };
 }
 
@@ -117,6 +152,65 @@ function verifyPassword(password, storedHash) {
   return actual.length === expectedBuffer.length && timingSafeEqual(actual, expectedBuffer);
 }
 
+function getAuthUsers(store = loadAuthStore()) {
+  const envUser = { username: webuiUsername, passwordPlain: webuiPassword, source: "env" };
+  const storedUsers = Array.isArray(store.users) ? store.users : [];
+  return [
+    envUser,
+    ...storedUsers.filter((user) => String(user.username || "").toLowerCase() !== webuiUsername.toLowerCase()),
+  ];
+}
+
+function verifyUserPassword(user, password) {
+  if (typeof user?.passwordPlain === "string") {
+    return safeEqualText(password, user.passwordPlain);
+  }
+  return verifyPassword(password, user?.passwordHash);
+}
+
+function base64url(value) {
+  return Buffer.from(String(value)).toString("base64url");
+}
+
+function signSessionPayload(payload) {
+  return createHmac("sha256", sessionSecret).update(String(payload)).digest("base64url");
+}
+
+function safeEqualText(left, right) {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function cookieSecureEnabled() {
+  return /^(1|true|yes|on)$/i.test(process.env.WEBUI_COOKIE_SECURE || process.env.COOKIE_SECURE || "");
+}
+
+function setSessionCookie(res, value) {
+  const attributes = [
+    `${sessionCookieName}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.ceil(sessionTtlMs / 1000)}`,
+  ];
+  if (cookieSecureEnabled()) attributes.push("Secure");
+  res.setHeader("Set-Cookie", attributes.join("; "));
+}
+
+function clearSessionCookie(res) {
+  const attributes = [
+    `${sessionCookieName}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+  ];
+  if (cookieSecureEnabled()) attributes.push("Secure");
+  res.setHeader("Set-Cookie", attributes.join("; "));
+}
+
 function parseCookies(req) {
   const result = {};
   for (const part of String(req.headers.cookie || "").split(";")) {
@@ -129,38 +223,60 @@ function parseCookies(req) {
   return result;
 }
 
-function cookieFlags() {
-  const secure = /^(1|true|yes|on)$/i.test(process.env.COOKIE_SECURE || "") ? "; Secure" : "";
-  return `HttpOnly; SameSite=Lax; Path=/${secure}`;
-}
-
-function setSessionCookie(res, token) {
-  res.setHeader("Set-Cookie", `${sessionCookieName}=${encodeURIComponent(token)}; Max-Age=${Math.floor(sessionTtlMs / 1000)}; ${cookieFlags()}`);
-}
-
-function clearSessionCookie(res) {
-  res.setHeader("Set-Cookie", `${sessionCookieName}=; Max-Age=0; ${cookieFlags()}`);
-}
-
 function getAuthenticatedUser(req) {
   const token = parseCookies(req)[sessionCookieName];
   if (!token) return null;
-  const session = sessions.get(token);
-  if (!session || session.expiresAt <= Date.now()) {
-    sessions.delete(token);
+  const [payload, signature] = String(token).split(".");
+  if (!payload || !signature || !safeEqualText(signature, signSessionPayload(payload))) return null;
+  try {
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!session?.username || !session?.expiresAt || Number(session.expiresAt) <= Date.now()) return null;
+    const users = getAuthUsers();
+    if (!users.some((user) => user.username.toLowerCase() === String(session.username).toLowerCase())) return null;
+    return { username: session.username };
+  } catch {
     return null;
   }
-  session.expiresAt = Date.now() + sessionTtlMs;
-  return { username: session.username };
 }
 
 function createSession(res, username) {
-  const token = randomBytes(32).toString("hex");
-  sessions.set(token, { username, expiresAt: Date.now() + sessionTtlMs });
-  setSessionCookie(res, token);
+  const payload = base64url(JSON.stringify({
+    username,
+    expiresAt: Date.now() + sessionTtlMs,
+    nonce: randomBytes(8).toString("hex"),
+  }));
+  setSessionCookie(res, `${payload}.${signSessionPayload(payload)}`);
 }
 
-async function handleAuthApi(req, res, url) {
+function clientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || req.socket?.remoteAddress || "unknown";
+}
+
+function failureState(ip) {
+  const state = loginFailures.get(ip) || { count: 0, lastAt: 0 };
+  if (Date.now() - state.lastAt > 10 * 60 * 1000) return { count: 0, lastAt: 0 };
+  return state;
+}
+
+function recordLoginFailure(ip) {
+  const state = failureState(ip);
+  loginFailures.set(ip, { count: state.count + 1, lastAt: Date.now() });
+}
+
+function clearLoginFailure(ip) {
+  loginFailures.delete(ip);
+}
+
+function delay(ms) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function registrationAllowed(user) {
+  return Boolean(user) && /^(1|true|yes|on)$/i.test(process.env.AUTH_ALLOW_REGISTRATION || "");
+}
+
+async function handleAuthApi(req, res, url, currentUser = null) {
   const store = loadAuthStore();
   if (req.method === "GET" && url.pathname === "/api/auth/status") {
     const user = getAuthenticatedUser(req);
@@ -168,13 +284,40 @@ async function handleAuthApi(req, res, url) {
       ok: true,
       authenticated: Boolean(user),
       user,
-      registrationOpen: registrationOpen(store),
+      registrationOpen: registrationAllowed(user),
     });
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    const ip = clientIp(req);
+    const failures = failureState(ip);
+    if (failures.count >= 5) {
+      await delay(Math.min(3000, failures.count * 500));
+    }
+    const body = await readBody(req);
+    const username = normalizeUsername(body.username);
+    const password = String(body.password || "");
+    const user = getAuthUsers(store).find((item) => item.username.toLowerCase() === username.toLowerCase());
+    if (!user || !verifyUserPassword(user, password)) {
+      recordLoginFailure(ip);
+      sendJson(res, 401, { ok: false, error: "Invalid username or password." });
+      return;
+    }
+    clearLoginFailure(ip);
+    createSession(res, user.username);
+    sendJson(res, 200, { ok: true, user: { username: user.username }, registrationOpen: registrationAllowed({ username: user.username }) });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    clearSessionCookie(res);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/auth/register") {
-    if (!registrationOpen(store)) {
+    if (!registrationAllowed(currentUser)) {
       sendJson(res, 403, { ok: false, error: "Registration is disabled." });
       return;
     }
@@ -189,36 +332,13 @@ async function handleAuthApi(req, res, url) {
       sendJson(res, 400, { ok: false, error: "Password must be at least 8 characters." });
       return;
     }
-    if (store.users.some((user) => user.username.toLowerCase() === username.toLowerCase())) {
+    if (getAuthUsers(store).some((user) => user.username.toLowerCase() === username.toLowerCase())) {
       sendJson(res, 409, { ok: false, error: "Username already exists." });
       return;
     }
     store.users.push({ username, passwordHash: hashPassword(password), createdAt: new Date().toISOString() });
     saveAuthStore(store);
-    createSession(res, username);
-    sendJson(res, 200, { ok: true, user: { username }, registrationOpen: registrationOpen(store) });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/auth/login") {
-    const body = await readBody(req);
-    const username = normalizeUsername(body.username);
-    const password = String(body.password || "");
-    const user = store.users.find((item) => item.username.toLowerCase() === username.toLowerCase());
-    if (!user || !verifyPassword(password, user.passwordHash)) {
-      sendJson(res, 401, { ok: false, error: "Invalid username or password." });
-      return;
-    }
-    createSession(res, user.username);
-    sendJson(res, 200, { ok: true, user: { username: user.username }, registrationOpen: registrationOpen(store) });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
-    const token = parseCookies(req)[sessionCookieName];
-    if (token) sessions.delete(token);
-    clearSessionCookie(res);
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, user: { username }, registrationOpen: registrationAllowed(currentUser) });
     return;
   }
 
@@ -227,7 +347,11 @@ async function handleAuthApi(req, res, url) {
 
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
-  if (url.pathname.startsWith("/api/auth/")) {
+  if (req.method === "GET" && url.pathname === "/api/health") {
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (url.pathname === "/api/auth/status" || url.pathname === "/api/auth/login") {
     await handleAuthApi(req, res, url);
     return;
   }
@@ -236,15 +360,19 @@ async function handleApi(req, res) {
     sendJson(res, 401, { ok: false, error: "Authentication required." });
     return;
   }
+  if (url.pathname.startsWith("/api/auth/")) {
+    await handleAuthApi(req, res, url, user);
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/config") {
     sendJson(res, 200, {
       ok: true,
       data: {
         mode: config.mode,
-        host: "localhost",
-        port: null,
-        user: "root",
-        auth: "local",
+        host: config.host || "localhost",
+        port: config.port || null,
+        user: config.user || "root",
+        auth: config.auth || "local",
         configured: config.configured,
         targetLabel: config.targetLabel,
         runtimeLabel: config.runtimeLabel,
@@ -626,6 +754,8 @@ active=$(systemctl is-active mihomo.service 2>/dev/null || true)
 enabled=$(systemctl is-enabled mihomo.service 2>/dev/null || true)
 timer=$(systemctl is-enabled mihomo-subscription.timer 2>/dev/null || true)
 bin_path=$(mihomo_bin 2>/dev/null || true)
+mode_value=$(awk -F: '/^mode[[:space:]]*:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' "$CONFIG_FILE" 2>/dev/null || true)
+if [ -z "$mode_value" ]; then mode_value=Rule; fi
 
 if [ "$WEBUI_LANG" = zh ]; then
   if [ -z "$bin_path" ]; then bin_path='(未找到)'; fi
@@ -1656,11 +1786,33 @@ function runRemoteScript(script, timeoutMs = 90_000) {
 }
 
 function buildScriptProcess() {
-  if (/^(1|true|yes|on|direct)$/i.test(process.env.MIHOMO_DIRECT_EXEC || "")) {
-    return { command: "bash", args: ["-s"], env: process.env };
+  if (config.mode === "remote") {
+    const knownHostsFile = process.env.SSH_KNOWN_HOSTS_FILE || "/tmp/mihomo_manager_known_hosts";
+    const sshArgs = ["-p", String(config.port), "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + knownHostsFile];
+    let command = "ssh";
+    let args = sshArgs;
+    let env = process.env;
+    if (config.auth === "key") {
+      args = ["-i", config.identityFile, "-o", "BatchMode=yes", ...sshArgs];
+    } else {
+      command = "sshpass";
+      args = [
+        "-e",
+        "ssh",
+        "-o",
+        "PreferredAuthentications=password",
+        "-o",
+        "PubkeyAuthentication=no",
+        ...sshArgs,
+      ];
+      env = { ...process.env, SSHPASS: config.password };
+    }
+    return { command, args: [...args, `${config.user}@${config.host}`, "bash -s"], env };
   }
-  const nsenter = process.env.NSENTER_BIN || "/usr/bin/nsenter";
-  if (existsSync(nsenter)) {
+
+  const runner = String(process.env.MIHOMO_LOCAL_RUNNER || "direct").toLowerCase();
+  if (runner === "nsenter") {
+    const nsenter = process.env.NSENTER_BIN || "/usr/bin/nsenter";
     return {
       command: nsenter,
       args: ["--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "bash", "-s"],

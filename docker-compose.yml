@@ -14,17 +14,27 @@ services:
       LISTEN_HOST: 0.0.0.0
       PORT: 5178
       DATA_DIR: /app/data
-      MIHOMO_MANAGER_HOST_PROJECT_DIR: ${MIHOMO_MANAGER_HOST_PROJECT_DIR:-/data/mihomo-manager-webui}
-      AUTH_ALLOW_REGISTRATION: ${AUTH_ALLOW_REGISTRATION:-}
+      WEBUI_USERNAME: ${WEBUI_USERNAME:-admin}
+      WEBUI_PASSWORD: ${WEBUI_PASSWORD:?Set WEBUI_PASSWORD}
+      WEBUI_SESSION_SECRET: ${WEBUI_SESSION_SECRET:?Set WEBUI_SESSION_SECRET}
+      WEBUI_COOKIE_SECURE: ${WEBUI_COOKIE_SECURE:-false}
+      AUTH_ALLOW_REGISTRATION: ${AUTH_ALLOW_REGISTRATION:-false}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
-      COOKIE_SECURE: ${COOKIE_SECURE:-}
+      MIHOMO_MODE: ${MIHOMO_MODE:-local}
+      MIHOMO_LOCAL_RUNNER: ${MIHOMO_LOCAL_RUNNER:-nsenter}
+      MIHOMO_MANAGER_HOST_PROJECT_DIR: ${MIHOMO_MANAGER_HOST_PROJECT_DIR:-/data/mihomo-manager-webui}
+      MIHOMO_HOST: ${MIHOMO_HOST:-}
+      MIHOMO_SSH_PORT: ${MIHOMO_SSH_PORT:-22}
+      MIHOMO_USER: ${MIHOMO_USER:-root}
+      MIHOMO_AUTH: ${MIHOMO_AUTH:-}
+      MIHOMO_PASSWORD: ${MIHOMO_PASSWORD:-}
     volumes:
       - ./data:/app/data
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5178/api/auth/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5178/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

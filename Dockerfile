@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates util-linux \
+  && apt-get install -y --no-install-recommends ca-certificates util-linux openssh-client sshpass \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -16,7 +16,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh /app/scripts/update-mihomo-subs
 ENV NODE_ENV=production \
   PORT=5178 \
   LISTEN_HOST=0.0.0.0 \
-  DATA_DIR=/app/data
+  DATA_DIR=/app/data \
+  MIHOMO_MODE=local
 
 EXPOSE 5178
 

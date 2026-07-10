@@ -14,11 +14,11 @@ Treat WebUI administrator access as host-root equivalent.
 
 ## Authentication
 
-- The first account can register from the login page.
-- After the first account exists, registration is closed by default.
-- Set `AUTH_ALLOW_REGISTRATION=true` only when you intentionally allow additional self-registration.
-- Passwords are stored as `scrypt` hashes in `data/auth.json`.
-- Sessions are stored in memory and expire according to `SESSION_TTL_HOURS`.
+- The primary administrator is configured by `WEBUI_USERNAME` and `WEBUI_PASSWORD`.
+- Public self-registration is not enabled. The registration endpoint requires an authenticated administrator.
+- Set `AUTH_ALLOW_REGISTRATION=true` only when an authenticated administrator needs to add additional WebUI users.
+- Additional users are stored as `scrypt` hashes in `data/auth.json`.
+- Sessions are signed with `WEBUI_SESSION_SECRET` and expire according to `SESSION_TTL_HOURS`.
 
 ## Sensitive Data
 
@@ -46,7 +46,7 @@ MIHOMO_MANAGER_BIND=127.0.0.1
 2. Put the WebUI behind a TLS reverse proxy and set:
 
 ```env
-COOKIE_SECURE=true
+WEBUI_COOKIE_SECURE=true
 ```
 
 3. Restrict access with firewall rules, VPN, or private network policies.
@@ -61,4 +61,4 @@ AUTH_ALLOW_REGISTRATION=false
 
 ## Why Docker Needs Elevated Permissions
 
-The WebUI modifies host files and controls host systemd units. Without SSH, the container uses `nsenter --target 1` to run scripts in the host namespaces. This requires elevated container privileges. If your environment cannot accept that risk, run the Node process directly on the host under a carefully controlled service account with only the required file and systemd permissions.
+The WebUI modifies host files and controls host systemd units. In Docker local mode with `MIHOMO_LOCAL_RUNNER=nsenter`, the container uses `nsenter --target 1` to run scripts in the host namespaces. This requires elevated container privileges. If your environment cannot accept that risk, run the Node process directly on the host under a carefully controlled service account with only the required file and systemd permissions.
