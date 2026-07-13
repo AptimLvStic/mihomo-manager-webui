@@ -13,13 +13,20 @@ const state = {
   authMode: "login",
   registrationOpen: false,
   subscriptionSettings: null,
+  subscriptions: [],
+  activeSubscriptionId: "",
   mihomoProxySettings: null,
+  runtimeSettings: null,
+  currentUser: null,
+  trafficTimer: null,
+  rulesLoaded: false,
 };
 
 const titles = {
-  dashboard: "概览",
+  dashboard: "仪表盘",
   proxies: "节点",
   subscription: "订阅",
+  rules: "规则",
   proxy: "配置",
   ops: "运维",
 };
@@ -82,6 +89,8 @@ document.querySelector("#authForm").addEventListener("submit", async (event) => 
   await submitAuth(event.submitter);
 });
 
+document.querySelector("#openAdminRegisterBtn").addEventListener("click", () => showAdminRegisterModal(true));
+document.querySelector("#cancelAdminRegisterBtn").addEventListener("click", () => showAdminRegisterModal(false));
 document.querySelector("#adminRegisterForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   await submitAdminRegistration(event.submitter);
@@ -108,12 +117,14 @@ document.body.addEventListener("click", async (event) => {
 
 document.querySelector("#subscriptionForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  await saveSubscriptionSettings(false);
+  await saveSubscription(event.submitter);
 });
-
-document.querySelector("#saveAndUpdateSubscriptionBtn").addEventListener("click", async () => {
-  await saveSubscriptionSettings(true);
-});
+document.querySelector("#newSubscriptionBtn").addEventListener("click", () => openSubscriptionModal());
+document.querySelector("#cancelSubscriptionBtn").addEventListener("click", () => closeSubscriptionModal());
+document.querySelector("#importSubscriptionBtn").addEventListener("click", async (event) => importSubscription(event.currentTarget));
+document.querySelector("#deleteSubscriptionBtn").addEventListener("click", async (event) => deleteCurrentSubscription(event.currentTarget));
+document.querySelector("#updateSubscriptionBtn").addEventListener("click", async (event) => updateCurrentSubscription(event.currentTarget));
+document.querySelector("#subscriptionCards").addEventListener("click", async (event) => handleSubscriptionCardsClick(event));
 
 document.querySelector("#coreProxyForm").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -122,6 +133,12 @@ document.querySelector("#coreProxyForm").addEventListener("submit", async (event
 
 document.querySelector("#reloadCoreProxySettingsBtn").addEventListener("click", async (event) => {
   await loadCoreProxySettings(true, event.currentTarget);
+});
+document.querySelector("#reloadRuntimeSettingsBtn").addEventListener("click", async (event) => {
+  await loadRuntimeSettings(true, event.currentTarget);
+});
+document.querySelector("#saveRuntimeSettingsBtn").addEventListener("click", async (event) => {
+  await saveRuntimeSettings(event.currentTarget);
 });
 
 document.querySelector("#coreBindAddress").addEventListener("change", () => syncAllowLanWithBindAddress(true));
@@ -160,7 +177,6 @@ document.querySelector("#loadLogsBtn").addEventListener("click", async () => {
 
 document.querySelector("#reloadProxiesBtn").addEventListener("click", (event) => loadProxies(true, event.currentTarget));
 document.querySelector("#delayGroupBtn").addEventListener("click", () => testSelectedGroupDelays());
-document.querySelector("#loadRulesBtn").addEventListener("click", () => loadRules());
 
 document.querySelector("#proxyGroups").addEventListener("click", (event) => {
   const button = event.target.closest("[data-proxy-group]");
@@ -197,6 +213,8 @@ async function boot() {
   try {
     const status = await requestJson("/api/auth/status", { timeoutMs: 8_000, skipAuthRedirect: true });
     state.registrationOpen = Boolean(status.registrationOpen);
+    state.currentUser = status.user || null;
+    updateUserLabel();
     if (status.authenticated) {
       await enterApp();
       return;
@@ -211,11 +229,14 @@ async function boot() {
 async function enterApp() {
   await loadConfig();
   showApp();
-  loadSubscriptionSettings();
+  loadSubscriptions();
   refreshStatus();
+  loadTraffic();
+  startTrafficPolling();
 }
 
 function showAuth(mode = "login") {
+  stopTrafficPolling();
   document.querySelector("#appShell").classList.add("is-hidden");
   document.querySelector("#authScreen").classList.remove("is-hidden");
   setAuthMode(mode);
@@ -224,6 +245,7 @@ function showAuth(mode = "login") {
 function showApp() {
   document.querySelector("#authScreen").classList.add("is-hidden");
   document.querySelector("#appShell").classList.remove("is-hidden");
+  updateUserLabel();
   updateAdminRegistrationState();
 }
 
@@ -267,6 +289,8 @@ async function submitAuth(button = null) {
     });
     if (!payload.ok) throw new Error(payload.error || "认证失败");
     state.registrationOpen = Boolean(payload.registrationOpen);
+    state.currentUser = payload.user || { username };
+    updateUserLabel();
     document.querySelector("#authPassword").value = "";
     document.querySelector("#authConfirmPassword").value = "";
     await enterApp();
@@ -281,9 +305,21 @@ async function logout() {
   try {
     await requestJson("/api/auth/logout", { method: "POST", body: {}, timeoutMs: 8_000, skipAuthRedirect: true });
   } finally {
+    state.currentUser = null;
+    updateUserLabel();
     showAuth("login");
     setConnection(false, "未登录");
   }
+}
+
+function updateUserLabel() {
+  const label = document.querySelector("#currentUserLabel");
+  if (label) label.textContent = state.currentUser?.username || "未登录";
+}
+
+function showAdminRegisterModal(show) {
+  document.querySelector("#adminRegisterModal").classList.toggle("is-hidden", !show);
+  updateAdminRegistrationState();
 }
 
 async function submitAdminRegistration(button = null) {
@@ -308,6 +344,7 @@ async function submitAdminRegistration(button = null) {
     document.querySelector("#adminRegisterUsername").value = "";
     document.querySelector("#adminRegisterPassword").value = "";
     document.querySelector("#adminRegisterConfirm").value = "";
+    showAdminRegisterModal(false);
   }
 }
 
@@ -322,6 +359,11 @@ function updateAdminRegistrationState() {
     const element = document.querySelector(selector);
     if (element) element.disabled = state.busy || !state.registrationOpen;
   }
+  const openButton = document.querySelector("#openAdminRegisterBtn");
+  if (openButton) {
+    openButton.disabled = state.busy || !state.registrationOpen;
+    openButton.title = state.registrationOpen ? "新增管理员账号" : "注册功能未开启";
+  }
   const hint = document.querySelector("#adminRegisterHint");
   if (hint) {
     hint.textContent = state.registrationOpen
@@ -335,6 +377,8 @@ function resetRuntimeState() {
   state.proxyDelays = {};
   state.mihomoProxySettings = null;
   state.subscriptionSettings = null;
+  state.subscriptions = [];
+  state.activeSubscriptionId = "";
   state.selectingProxyNodes.clear();
   state.testingDelayNodes.clear();
   state.testingDelays = false;
@@ -359,11 +403,20 @@ function setView(view) {
   if (view === "proxies" && !state.proxyData) {
     loadProxies();
   }
-  if (view === "ops") {
+  if (view === "rules" && !state.rulesLoaded) {
+    loadRules();
+  }
+  if (view === "rules") {
     loadRulePolicies();
+  }
+  if (view === "subscription" && !state.subscriptions.length) {
+    loadSubscriptions();
   }
   if (view === "proxy" && !state.mihomoProxySettings) {
     loadCoreProxySettings();
+  }
+  if (view === "proxy" && !state.runtimeSettings) {
+    loadRuntimeSettings();
   }
 }
 
@@ -376,65 +429,221 @@ async function loadConfig() {
   }
   const { targetLabel, runtimeLabel } = payload.data;
   const target = targetLabel || "Local Mihomo Host";
-  document.querySelector("#serverLabel").textContent = target;
-  document.querySelector("#configHost").textContent = target;
-  document.querySelector("#configUser").textContent = "root / local host";
-  document.querySelector("#configScript").textContent = runtimeLabel || "本地管理通道";
+  document.querySelector("#serverLabel").textContent = runtimeLabel || target;
   return payload.data;
 }
 
-async function loadSubscriptionSettings() {
+async function loadSubscriptions(button = null) {
+  setButtonLoading(button, true);
   try {
-    const payload = await requestJson("/api/subscription/settings");
-    if (!payload.ok) throw new Error(payload.error || payload.stderr || "订阅设置读取失败");
-    state.subscriptionSettings = payload.data;
-    document.querySelector("#subscriptionName").value = payload.data.name || "默认订阅";
-    document.querySelector("#subscriptionDescription").value = payload.data.description || "";
-    document.querySelector("#subscriptionUa").value = payload.data.ua && payload.data.ua !== "User-Agent"
-      ? payload.data.ua
-      : "";
-    document.querySelector("#subscriptionAutoUpdate").checked = Boolean(payload.data.autoUpdate);
-    document.querySelector("#subscriptionSystemProxy").checked = Boolean(payload.data.systemProxy);
-    document.querySelector("#subscriptionKernelUpdate").checked = Boolean(payload.data.kernelUpdate);
-    writeSubscriptionSummary(payload.data);
+    const payload = await requestJson("/api/subscriptions", { timeoutMs: 60_000 });
+    if (!payload.ok) throw new Error(payload.error || payload.stderr || "订阅列表读取失败");
+    state.subscriptions = payload.data.subscriptions || [];
+    state.activeSubscriptionId = payload.data.activeId || state.subscriptions.find((item) => item.active)?.id || "";
+    renderSubscriptions();
   } catch (error) {
-    writeOutput("subscription", error.message);
+    document.querySelector("#subscriptionCards").innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
+    toast("读取订阅失败", "error", error.message);
+  } finally {
+    setButtonLoading(button, false);
   }
 }
 
-async function saveSubscriptionSettings(updateAfterSave) {
-  const body = {
+function renderSubscriptions() {
+  const container = document.querySelector("#subscriptionCards");
+  const summary = document.querySelector("#subscriptionSummary");
+  container.innerHTML = "";
+  summary.textContent = state.subscriptions.length
+    ? `共 ${state.subscriptions.length} 个订阅，当前：${state.subscriptions.find((item) => item.active)?.name || "未选择"}`
+    : "还没有订阅，请粘贴链接导入或新建。";
+  if (!state.subscriptions.length) {
+    container.innerHTML = '<div class="empty-state">粘贴订阅链接并点击导入，或点击新建。</div>';
+    return;
+  }
+  for (const item of state.subscriptions) {
+    const card = document.createElement("article");
+    card.className = `subscription-card${item.active ? " active" : ""}`;
+    card.dataset.subscriptionId = item.id;
+    card.innerHTML = `
+      <div class="subscription-card-top">
+        <span class="drag-dot">::</span>
+        <strong>${escapeHtml(item.name || item.id)}</strong>
+        <button class="icon-button" data-subscription-action="update" title="更新订阅" type="button">↻</button>
+      </div>
+      <p>${escapeHtml(item.description || item.host || item.maskedUrl || "未设置链接")}</p>
+      <div class="subscription-meta">
+        <span>${item.active ? "当前使用" : "可切换"}</span>
+        <span>${escapeHtml(item.ua || "User-Agent")}</span>
+        <span>${formatTimestamp(item.updatedAt)}</span>
+      </div>
+      <div class="subscription-progress"><span style="width:${item.active ? 84 : 36}%"></span></div>
+      <div class="subscription-actions">
+        <button data-subscription-action="select" type="button">使用</button>
+        <button data-subscription-action="edit" type="button">编辑</button>
+      </div>
+    `;
+    container.appendChild(card);
+  }
+}
+
+async function handleSubscriptionCardsClick(event) {
+  const button = event.target.closest("[data-subscription-action]");
+  const card = event.target.closest("[data-subscription-id]");
+  if (!button || !card) return;
+  const id = card.dataset.subscriptionId;
+  const action = button.dataset.subscriptionAction;
+  if (action === "edit") {
+    const item = state.subscriptions.find((sub) => sub.id === id);
+    openSubscriptionModal(item);
+  } else if (action === "select") {
+    await selectSubscription(id, button);
+  } else if (action === "update") {
+    await updateSubscription(id, button);
+  }
+}
+
+function openSubscriptionModal(item = null, url = "") {
+  document.querySelector("#subscriptionModalTitle").textContent = item ? "编辑配置" : "新建配置";
+  document.querySelector("#subscriptionId").value = item?.id || "";
+  document.querySelector("#subscriptionName").value = item?.name || "";
+  document.querySelector("#subscriptionDescription").value = item?.description || "";
+  document.querySelector("#subscriptionUrl").value = item?.rawUrl || url || "";
+  document.querySelector("#subscriptionUa").value = item?.ua && item.ua !== "User-Agent" ? item.ua : "";
+  document.querySelector("#subscriptionTimeout").value = item?.timeout || 30;
+  document.querySelector("#subscriptionInterval").value = item?.interval || 1440;
+  document.querySelector("#subscriptionAutoUpdate").checked = item ? Boolean(item.autoUpdate) : true;
+  document.querySelector("#subscriptionSystemProxy").checked = item ? Boolean(item.systemProxy) : false;
+  document.querySelector("#subscriptionKernelUpdate").checked = item ? Boolean(item.kernelUpdate) : false;
+  document.querySelector("#subscriptionSetActive").checked = item ? Boolean(item.active) : true;
+  document.querySelector("#deleteSubscriptionBtn").classList.toggle("is-hidden", !item);
+  document.querySelector("#updateSubscriptionBtn").classList.toggle("is-hidden", !item);
+  document.querySelector("#subscriptionModal").classList.remove("is-hidden");
+}
+
+function closeSubscriptionModal() {
+  document.querySelector("#subscriptionModal").classList.add("is-hidden");
+}
+
+function readSubscriptionForm() {
+  return {
+    id: document.querySelector("#subscriptionId").value.trim(),
     name: document.querySelector("#subscriptionName").value.trim(),
     description: document.querySelector("#subscriptionDescription").value.trim(),
     url: document.querySelector("#subscriptionUrl").value.trim(),
     ua: document.querySelector("#subscriptionUa").value.trim(),
+    timeout: Number(document.querySelector("#subscriptionTimeout").value || 30),
+    interval: Number(document.querySelector("#subscriptionInterval").value || 1440),
     autoUpdate: document.querySelector("#subscriptionAutoUpdate").checked,
     systemProxy: document.querySelector("#subscriptionSystemProxy").checked,
     kernelUpdate: document.querySelector("#subscriptionKernelUpdate").checked,
+    active: document.querySelector("#subscriptionSetActive").checked,
   };
-  const result = await postJson("/api/subscription/settings", body, "subscription");
-  if (!result?.ok) return;
-  document.querySelector("#subscriptionUrl").value = "";
-  await loadSubscriptionSettings();
-  await refreshStatus();
-  if (updateAfterSave) {
+}
+
+async function saveSubscription(button = null) {
+  const body = readSubscriptionForm();
+  if (!body.url) {
+    toast("请输入订阅链接", "error");
+    return;
+  }
+  const result = await postJson("/api/subscriptions", body, "subscription", button);
+  if (result?.ok) {
+    closeSubscriptionModal();
+    await loadSubscriptions();
+    await refreshStatus();
+  }
+}
+
+async function importSubscription(button = null) {
+  const input = document.querySelector("#subscriptionImportUrl");
+  const url = input.value.trim();
+  if (!url) {
+    toast("请输入订阅链接", "error");
+    return;
+  }
+  const result = await postJson("/api/subscriptions", { url, name: "", autoUpdate: true, active: true }, "subscription", button);
+  if (result?.ok) {
+    input.value = "";
+    await loadSubscriptions();
     await runAction("update");
   }
 }
 
-function writeSubscriptionSummary(data) {
-  const output = outputTargets.subscription;
-  const rows = [
-    ["订阅名称", data.name || "默认订阅"],
-    ["订阅描述", data.description || "无"],
-    ["当前链接", data.maskedUrl || "未设置"],
-    ["User-Agent", data.ua || "User-Agent"],
-    ["允许自动更新", data.autoUpdate ? "已启用" : "未启用"],
-    ["使用系统代理更新", data.systemProxy ? "已启用" : "未启用"],
-    ["使用内核更新", data.kernelUpdate ? "已启用" : "未启用"],
-    ["定时器", data.timer || "--"],
-  ];
-  output.textContent = rows.map(([label, value]) => `${label}：${value}`).join("\n");
+async function selectSubscription(id, button = null) {
+  const result = await postJson("/api/subscriptions/select", { id }, "subscription", button);
+  if (result?.ok) {
+    await loadSubscriptions();
+    await refreshStatus();
+  }
+}
+
+async function updateSubscription(id, button = null) {
+  const result = await postJson("/api/subscriptions/update", { id }, "subscription", button);
+  if (result?.ok) {
+    await loadSubscriptions();
+    await refreshStatus();
+  }
+}
+
+async function updateCurrentSubscription(button = null) {
+  const id = document.querySelector("#subscriptionId").value.trim();
+  if (!id) return;
+  await updateSubscription(id, button);
+}
+
+async function deleteCurrentSubscription(button = null) {
+  const id = document.querySelector("#subscriptionId").value.trim();
+  if (!id || !window.confirm("删除该订阅配置？")) return;
+  const result = await postJson("/api/subscriptions/delete", { id }, "subscription", button);
+  if (result?.ok) {
+    closeSubscriptionModal();
+    await loadSubscriptions();
+  }
+}
+
+function formatTimestamp(value) {
+  if (!value) return "--";
+  const diff = Math.max(0, Date.now() - Number(value) * 1000);
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.round(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)} 小时前`;
+  return `${Math.round(diff / 86_400_000)} 天前`;
+}
+
+async function loadRuntimeSettings(force = false, button = null) {
+  if (state.runtimeSettings && !force) {
+    renderRuntimeSettings(state.runtimeSettings);
+    return;
+  }
+  setButtonLoading(button, true);
+  try {
+    const payload = await requestJson("/api/runtime-settings", { timeoutMs: 30_000 });
+    if (!payload.ok) throw new Error(payload.error || payload.stderr || "运行时配置读取失败");
+    state.runtimeSettings = payload.data;
+    renderRuntimeSettings(payload.data);
+  } catch (error) {
+    document.querySelector("#runtimeSettingsSummary").textContent = error.message;
+    toast("读取运行时配置失败", "error", error.message);
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+function renderRuntimeSettings(data) {
+  document.querySelector("#guardFirewallEnabled").checked = Boolean(data.guardEnabled || data.guardActive || data.guardInstalled);
+  document.querySelector("#runtimeSettingsSummary").textContent = data.guardActive
+    ? "公网代理端口防护已启用"
+    : "公网代理端口防护未启用";
+}
+
+async function saveRuntimeSettings(button = null) {
+  if (!confirmDangerousAction(button)) return;
+  const body = { guardEnabled: document.querySelector("#guardFirewallEnabled").checked };
+  const result = await postJson("/api/runtime-settings", body, "proxy", button);
+  if (result?.ok) {
+    state.runtimeSettings = result.data;
+    renderRuntimeSettings(result.data);
+  }
 }
 
 async function loadCoreProxySettings(force = false, button = null) {
@@ -1061,7 +1270,7 @@ async function loadRules() {
     const payload = await requestJson("/api/rules");
     if (!payload.ok) throw new Error(payload.error || payload.stderr || "读取规则失败");
     renderRules(payload.data);
-    toast("规则已读取");
+    state.rulesLoaded = true;
   } catch (error) {
     document.querySelector("#rulesSummary").textContent = error.message;
     toast("读取规则失败", "error", error.message);
@@ -1273,6 +1482,40 @@ function writeClientPreference(key, value) {
   } catch {
     // Ignore storage failures in private browsing or locked-down webviews.
   }
+}
+
+function startTrafficPolling() {
+  stopTrafficPolling();
+  state.trafficTimer = setInterval(() => loadTraffic(), 3000);
+}
+
+function stopTrafficPolling() {
+  if (state.trafficTimer) clearInterval(state.trafficTimer);
+  state.trafficTimer = null;
+}
+
+async function loadTraffic() {
+  try {
+    const payload = await requestJson("/api/traffic", { timeoutMs: 15_000 });
+    if (!payload.ok) return;
+    const data = payload.data;
+    document.querySelector("#trafficUpload").textContent = formatBytes(data.txRate || 0);
+    document.querySelector("#trafficDownload").textContent = formatBytes(data.rxRate || 0);
+    document.querySelector("#trafficTotal").textContent = formatBytes((data.rxTotal || 0) + (data.txTotal || 0));
+  } catch {
+    // Keep the last rendered traffic values during transient errors.
+  }
+}
+
+function formatBytes(value) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = Number(value) || 0;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size >= 10 || index === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[index]}`;
 }
 
 function setConnection(ok, label) {

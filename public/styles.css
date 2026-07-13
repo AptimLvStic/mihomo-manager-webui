@@ -1018,3 +1018,326 @@ label span {
   width: 100%;
   margin-top: 12px;
 }
+
+/* P1 management surfaces */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.user-actions {
+  justify-content: flex-end;
+}
+
+.user-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  max-width: 180px;
+  border: 1px solid rgba(22, 124, 112, 0.22);
+  border-radius: 999px;
+  background: #eef8f5;
+  color: var(--accent-strong);
+  padding: 0 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.traffic-widget {
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(31, 43, 36, 0.06);
+  padding: 12px;
+}
+
+.traffic-spark {
+  display: flex;
+  align-items: end;
+  gap: 4px;
+  height: 18px;
+  margin-bottom: 2px;
+}
+
+.traffic-spark span {
+  display: block;
+  width: 36px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #167c70, #5b8f3f);
+}
+
+.traffic-spark span:first-child { height: 8px; opacity: 0.48; }
+.traffic-spark span:last-child { height: 14px; opacity: 0.72; }
+
+.traffic-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.traffic-row span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.traffic-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.traffic-row em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 12px;
+}
+
+.subscription-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.subscription-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.subscription-card {
+  display: grid;
+  gap: 10px;
+  min-height: 164px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  padding: 14px;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.subscription-card:hover {
+  border-color: rgba(22, 124, 112, 0.36);
+  background: #f7fbf8;
+}
+
+.subscription-card.active {
+  border-color: var(--accent);
+  background: #eef8f5;
+}
+
+.subscription-card-top {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.subscription-card-top strong,
+.subscription-card p {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subscription-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.drag-dot {
+  color: #9aa59e;
+  font-weight: 900;
+  letter-spacing: 1px;
+}
+
+.icon-button {
+  min-width: 34px;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.subscription-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.subscription-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.subscription-progress {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e8e3;
+}
+
+.subscription-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #167c70, #6b9f48);
+}
+
+.subscription-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.result-panel,
+.log-viewer,
+.empty-state {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: var(--text);
+  padding: 12px;
+}
+
+.result-panel,
+.log-viewer {
+  min-height: 120px;
+  max-height: 520px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 13px/1.55 "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.result-panel.small {
+  min-height: 96px;
+}
+
+.log-viewer {
+  min-height: 320px;
+}
+
+.empty-state {
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  text-align: center;
+}
+
+.advanced-block {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  padding: 0 12px 12px;
+  margin-bottom: 14px;
+}
+
+.advanced-block summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  background: rgba(32, 37, 33, 0.38);
+  padding: 24px;
+}
+
+.modal-panel {
+  width: min(560px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(31, 43, 36, 0.2);
+  padding: 18px;
+}
+
+.subscription-editor {
+  width: min(760px, 100%);
+}
+
+.modal-heading,
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-heading h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.modal-actions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  margin-top: 4px;
+}
+
+.modal-actions.single {
+  grid-template-columns: 1fr;
+}
+
+.terminal,
+.terminal.small {
+  border-color: var(--line);
+  background: #fbfcfa;
+  color: var(--text);
+  box-shadow: none;
+}
+
+@media (max-width: 980px) {
+  .sidebar {
+    min-height: auto;
+  }
+
+  .traffic-widget {
+    margin-top: 14px;
+  }
+}
+
+@media (max-width: 620px) {
+  .subscription-toolbar,
+  .subscription-grid,
+  .modal-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .user-actions {
+    justify-content: stretch;
+  }
+}

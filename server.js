@@ -411,6 +411,25 @@ async function handleApi(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/runtime-settings") {
+    const result = await runRemoteScript(runtimeSettingsScript(), 60_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/runtime-settings") {
+    const body = await readBody(req);
+    const result = await runRemoteScript(setRuntimeSettingsScript(body), 90_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/traffic") {
+    const result = await runRemoteScript(trafficScript(), 20_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/logs") {
     const target = url.searchParams.get("target") === "subscription" ? "subscription" : "mihomo";
     const lines = normalizeLines(url.searchParams.get("lines"));
@@ -491,6 +510,68 @@ async function handleApi(req, res) {
     }
     const result = await handler();
     sendJson(res, result.code === 0 ? 200 : 500, result);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/subscriptions") {
+    const result = await runRemoteScript(subscriptionsScript(), 60_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/subscriptions") {
+    const body = await readBody(req);
+    const nextUrl = String(body.url || "").trim();
+    if (!/^https?:\/\//i.test(nextUrl)) {
+      sendJson(res, 400, { ok: false, error: "Subscription URL must start with http:// or https://." });
+      return;
+    }
+    const result = await runRemoteScript(saveSubscriptionScript({
+      id: String(body.id || "").trim(),
+      name: String(body.name || "").trim(),
+      description: String(body.description || "").trim(),
+      url: nextUrl,
+      ua: String(body.ua || "").trim(),
+      autoUpdate: Boolean(body.autoUpdate),
+      systemProxy: Boolean(body.systemProxy),
+      kernelUpdate: Boolean(body.kernelUpdate),
+      timeout: Number(body.timeout || 0),
+      interval: Number(body.interval || 0),
+      active: Boolean(body.active),
+    }), 120_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/subscriptions/select") {
+    const body = await readBody(req);
+    const id = String(body.id || "").trim();
+    if (!id) {
+      sendJson(res, 400, { ok: false, error: "Subscription id is required." });
+      return;
+    }
+    const result = await runRemoteScript(selectSubscriptionScript(id), 60_000);
+    sendJsonResult(res, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/subscriptions/update") {
+    const body = await readBody(req);
+    const id = String(body.id || "").trim();
+    const result = await runRemoteScript(updateSubscriptionByIdScript(id), 180_000);
+    sendJson(res, result.code === 0 ? 200 : 500, result);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/subscriptions/delete") {
+    const body = await readBody(req);
+    const id = String(body.id || "").trim();
+    if (!id) {
+      sendJson(res, 400, { ok: false, error: "Subscription id is required." });
+      return;
+    }
+    const result = await runRemoteScript(deleteSubscriptionScript(id), 60_000);
+    sendJsonResult(res, result);
     return;
   }
 
@@ -585,6 +666,7 @@ ENV_FILE=$CONFIG_DIR/subscription.env
 WEBUI_ENV_FILE=$CONFIG_DIR/webui.env
 CONFIG_FILE=$CONFIG_DIR/config.yaml
 RAW_FILE=$CONFIG_DIR/subscription.raw.yaml
+SUBSCRIPTIONS_DIR=$CONFIG_DIR/subscriptions
 PROFILE_PROXY=/etc/profile.d/mihomo-proxy.sh
 APT_PROXY=/etc/apt/apt.conf.d/95mihomo-proxy
 PROXYCHAINS_CONF=/etc/proxychains4.conf
@@ -700,7 +782,7 @@ try:
     )
     print(urlunsplit((parts.scheme, parts.netloc, parts.path, masked_query, parts.fragment)))
 except Exception:
-    print(re.sub(r"((?:token|access_token|key|secret|password|passwd)=)[^&]+", r"\1***", url, flags=re.I))
+    print(re.sub(r"((?:token|access_token|key|secret|password|passwd)=)[^&]+", r"\\1***", url, flags=re.I))
 PY
   else
     printf '%s\n' "$value" | sed -E 's/((token|access_token|key|secret|password|passwd)=)[^&[:space:]]+/\1***/Ig'
@@ -1274,6 +1356,351 @@ print(json.dumps({
     "timer": os.environ.get("timer_state", ""),
 }, ensure_ascii=False))
 PY
+`;
+}
+
+function subscriptionsScript() {
+  return `${remoteBase()}
+install -d -m 700 "$SUBSCRIPTIONS_DIR"
+if ! ls "$SUBSCRIPTIONS_DIR"/*.env >/dev/null 2>&1 && [ -r "$ENV_FILE" ]; then
+  cp -a "$ENV_FILE" "$SUBSCRIPTIONS_DIR/default.env"
+  printf 'default\n' > "$SUBSCRIPTIONS_DIR/active"
+fi
+python3 - "$SUBSCRIPTIONS_DIR" "$ENV_FILE" <<'PY'
+import json
+import os
+import re
+import shlex
+import sys
+from pathlib import Path
+from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
+
+subscriptions_dir = Path(sys.argv[1])
+env_file = Path(sys.argv[2])
+active_file = subscriptions_dir / "active"
+active_id = active_file.read_text(encoding="utf-8", errors="ignore").strip() if active_file.exists() else ""
+secret_keys = {"token", "access_token", "key", "secret", "password", "passwd"}
+
+def parse_env(path):
+    data = {}
+    if not path.exists():
+        return data
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        try:
+            data[key] = shlex.split(value, posix=True)[0] if value else ""
+        except Exception:
+            data[key] = value.strip().strip("'").strip('"')
+    return data
+
+def mask_url(value):
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+        query = []
+        for key, item in parse_qsl(parts.query, keep_blank_values=True):
+            if key.lower() in secret_keys:
+                item = "***"
+            elif len(item) > 24:
+                item = item[:8] + "..." + item[-4:]
+            query.append((key, item))
+        masked_query = "&".join(quote(k, safe="") + "=" + quote(v, safe="*") for k, v in query)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, masked_query, parts.fragment))
+    except Exception:
+        return re.sub(r"((?:token|access_token|key|secret|password|passwd)=)[^&]+", r"\\1***", value, flags=re.I)
+
+def to_bool(value):
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+items = []
+for path in sorted(subscriptions_dir.glob("*.env")):
+    sid = path.stem
+    data = parse_env(path)
+    url = data.get("SUBSCRIPTION_URL", "")
+    split = urlsplit(url) if url else None
+    stat = path.stat()
+    items.append({
+        "id": sid,
+        "name": data.get("SUBSCRIPTION_NAME") or sid,
+        "description": data.get("SUBSCRIPTION_DESCRIPTION", ""),
+        "ua": data.get("SUBSCRIPTION_UA") or "User-Agent",
+        "maskedUrl": mask_url(url),
+        "rawUrl": url,
+        "host": split.netloc if split else "",
+        "autoUpdate": to_bool(data.get("SUBSCRIPTION_ALLOW_AUTO_UPDATE")),
+        "systemProxy": to_bool(data.get("SUBSCRIPTION_USE_SYSTEM_PROXY")),
+        "kernelUpdate": to_bool(data.get("SUBSCRIPTION_USE_KERNEL_UPDATE")),
+        "timeout": int(data.get("SUBSCRIPTION_HTTP_TIMEOUT") or 0) or 30,
+        "interval": int(data.get("SUBSCRIPTION_UPDATE_INTERVAL") or 0) or 1440,
+        "active": sid == active_id,
+        "updatedAt": int(stat.st_mtime),
+    })
+if items and not active_id:
+    items[0]["active"] = True
+    active_id = items[0]["id"]
+print(json.dumps({"activeId": active_id, "subscriptions": items}, ensure_ascii=False))
+PY
+`;
+}
+
+function saveSubscriptionScript(settings) {
+  const encoded = Buffer.from(JSON.stringify(settings || {}), "utf8").toString("base64");
+  return `${remoteBase()}
+install -d -m 700 "$SUBSCRIPTIONS_DIR"
+python3 - ${shellQuote(encoded)} "$SUBSCRIPTIONS_DIR" "$ENV_FILE" <<'PY'
+import base64
+import json
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+from urllib.parse import urlsplit
+
+settings = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+subscriptions_dir = Path(sys.argv[2])
+env_file = Path(sys.argv[3])
+subscriptions_dir.mkdir(parents=True, exist_ok=True)
+
+def slug(value):
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip("-._")
+    return value[:48] or "subscription"
+
+sid = slug(settings.get("id"))
+if not sid:
+    sid = slug(settings.get("name"))
+if sid == "subscription":
+    host = urlsplit(settings.get("url", "")).netloc
+    sid = slug(host) or f"sub-{int(time.time())}"
+path = subscriptions_dir / f"{sid}.env"
+name = str(settings.get("name") or sid).strip() or sid
+ua = str(settings.get("ua") or "User-Agent").strip() or "User-Agent"
+timeout = int(settings.get("timeout") or 30)
+interval = int(settings.get("interval") or 1440)
+timeout = min(max(timeout, 1), 3600)
+interval = min(max(interval, 1), 43200)
+url = str(settings.get("url") or "").strip()
+if not re.match(r"^https?://", url, re.I):
+    raise SystemExit("Subscription URL must start with http:// or https://.")
+
+def q(value):
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+lines = [
+    "# Managed by mihomo-manager-webui. Keep this file root-only.",
+    "SUBSCRIPTION_URL=" + q(url),
+    "SUBSCRIPTION_NAME=" + q(name),
+    "SUBSCRIPTION_DESCRIPTION=" + q(str(settings.get("description") or "")),
+    "SUBSCRIPTION_UA=" + q(ua),
+    "SUBSCRIPTION_ALLOW_AUTO_UPDATE=" + ("1" if settings.get("autoUpdate") else "0"),
+    "SUBSCRIPTION_USE_SYSTEM_PROXY=" + ("1" if settings.get("systemProxy") else "0"),
+    "SUBSCRIPTION_USE_KERNEL_UPDATE=" + ("1" if settings.get("kernelUpdate") else "0"),
+    f"SUBSCRIPTION_HTTP_TIMEOUT={timeout}",
+    f"SUBSCRIPTION_UPDATE_INTERVAL={interval}",
+]
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+path.chmod(0o600)
+if settings.get("active"):
+    shutil.copy2(path, env_file)
+    env_file.chmod(0o600)
+    (subscriptions_dir / "active").write_text(sid + "\n", encoding="utf-8")
+print(json.dumps({"id": sid, "active": bool(settings.get("active"))}, ensure_ascii=False))
+PY
+`;
+}
+
+function selectSubscriptionScript(id) {
+  return `${remoteBase()}
+install -d -m 700 "$SUBSCRIPTIONS_DIR"
+id=${shellQuote(id)}
+case "$id" in *[!A-Za-z0-9_.-]*|'') printf '[ERROR] Invalid subscription id.\n' >&2; exit 1 ;; esac
+src="$SUBSCRIPTIONS_DIR/$id.env"
+if [ ! -r "$src" ]; then printf '[ERROR] Subscription not found.\n' >&2; exit 1; fi
+install -m 600 "$src" "$ENV_FILE"
+printf '%s\n' "$id" > "$SUBSCRIPTIONS_DIR/active"
+python3 - <<PY
+import json
+print(json.dumps({"id": ${JSON.stringify(id)}, "active": True}, ensure_ascii=False))
+PY
+`;
+}
+
+function deleteSubscriptionScript(id) {
+  return `${remoteBase()}
+id=${shellQuote(id)}
+case "$id" in *[!A-Za-z0-9_.-]*|'') printf '[ERROR] Invalid subscription id.\n' >&2; exit 1 ;; esac
+src="$SUBSCRIPTIONS_DIR/$id.env"
+if [ ! -e "$src" ]; then printf '[ERROR] Subscription not found.\n' >&2; exit 1; fi
+active=$(cat "$SUBSCRIPTIONS_DIR/active" 2>/dev/null || true)
+rm -f "$src"
+if [ "$active" = "$id" ]; then
+  next=$(find "$SUBSCRIPTIONS_DIR" -maxdepth 1 -name '*.env' -printf '%f\n' | sed 's/\.env$//' | sort | head -1)
+  if [ -n "$next" ]; then
+    install -m 600 "$SUBSCRIPTIONS_DIR/$next.env" "$ENV_FILE"
+    printf '%s\n' "$next" > "$SUBSCRIPTIONS_DIR/active"
+  else
+    rm -f "$SUBSCRIPTIONS_DIR/active"
+  fi
+fi
+python3 - <<'PY'
+import json
+print(json.dumps({"deleted": True}, ensure_ascii=False))
+PY
+`;
+}
+
+function updateSubscriptionByIdScript(id) {
+  const select = id ? selectSubscriptionScript(id) : "";
+  return `${remoteBase()}
+${id ? `id=${shellQuote(id)}
+case "$id" in *[!A-Za-z0-9_.-]*|'') printf '[ERROR] Invalid subscription id.\n' >&2; exit 1 ;; esac
+src="$SUBSCRIPTIONS_DIR/$id.env"
+if [ ! -r "$src" ]; then printf '[ERROR] Subscription not found.\n' >&2; exit 1; fi
+install -m 600 "$src" "$ENV_FILE"
+printf '%s\n' "$id" > "$SUBSCRIPTIONS_DIR/active"` : ""}
+${updateFunctionBody()}
+update_subscription
+`;
+}
+
+function trafficScript() {
+  return `${remoteBase()}
+python3 - <<'PY'
+import json
+import time
+import urllib.request
+from pathlib import Path
+
+state_path = Path('/tmp/mihomo-manager-traffic.json')
+now = time.time()
+rx = tx = 0
+for line in Path('/proc/net/dev').read_text().splitlines()[2:]:
+    name, data = line.split(':', 1)
+    name = name.strip()
+    if name == 'lo':
+        continue
+    parts = data.split()
+    rx += int(parts[0])
+    tx += int(parts[8])
+prev = {}
+if state_path.exists():
+    try:
+        prev = json.loads(state_path.read_text())
+    except Exception:
+        prev = {}
+delta = max(now - float(prev.get('time', now)), 0.001)
+rx_rate = max(0, (rx - int(prev.get('rx', rx))) / delta)
+tx_rate = max(0, (tx - int(prev.get('tx', tx))) / delta)
+state_path.write_text(json.dumps({'time': now, 'rx': rx, 'tx': tx}))
+connections = 0
+try:
+    with urllib.request.urlopen('http://127.0.0.1:9090/connections', timeout=2) as resp:
+        payload = json.load(resp)
+    connections = len(payload.get('connections') or [])
+except Exception:
+    pass
+print(json.dumps({'rxRate': rx_rate, 'txRate': tx_rate, 'rxTotal': rx, 'txTotal': tx, 'connections': connections}, ensure_ascii=False))
+PY
+`;
+}
+
+function guardFirewallScriptBody() {
+  return String.raw`#!/usr/bin/env bash
+set -euo pipefail
+ensure_ipv4() {
+  iptables -N MIHOMO-GUARD 2>/dev/null || true
+  iptables -F MIHOMO-GUARD
+  iptables -A MIHOMO-GUARD -s 127.0.0.0/8 -j RETURN
+  iptables -A MIHOMO-GUARD -s 10.0.0.0/8 -j RETURN
+  iptables -A MIHOMO-GUARD -s 172.16.0.0/12 -j RETURN
+  iptables -A MIHOMO-GUARD -s 192.168.0.0/16 -j RETURN
+  iptables -A MIHOMO-GUARD -p tcp -m multiport --dports 7890,7891,1053 -j REJECT --reject-with tcp-reset
+  iptables -A MIHOMO-GUARD -p udp --dport 1053 -j DROP
+  iptables -A MIHOMO-GUARD -j RETURN
+  iptables -C INPUT -j MIHOMO-GUARD 2>/dev/null || iptables -I INPUT 1 -j MIHOMO-GUARD
+}
+ensure_ipv6() {
+  command -v ip6tables >/dev/null 2>&1 || return 0
+  ip6tables -N MIHOMO-GUARD 2>/dev/null || true
+  ip6tables -F MIHOMO-GUARD
+  ip6tables -A MIHOMO-GUARD -s ::1/128 -j RETURN
+  ip6tables -A MIHOMO-GUARD -p tcp -m multiport --dports 7890,7891,1053 -j REJECT --reject-with tcp-reset
+  ip6tables -A MIHOMO-GUARD -p udp --dport 1053 -j DROP
+  ip6tables -A MIHOMO-GUARD -j RETURN
+  ip6tables -C INPUT -j MIHOMO-GUARD 2>/dev/null || ip6tables -I INPUT 1 -j MIHOMO-GUARD
+}
+ensure_ipv4
+ensure_ipv6`;
+}
+
+function runtimeSettingsScript() {
+  return `${remoteBase()}
+python3 - <<'PY'
+import json
+import subprocess
+
+def run(args):
+    try:
+        return subprocess.run(args, text=True, capture_output=True, timeout=5)
+    except Exception as exc:
+        return type('Result', (), {'returncode': 1, 'stdout': '', 'stderr': str(exc)})()
+
+enabled = run(['systemctl', 'is-enabled', 'mihomo-guard-firewall.service'])
+active = run(['systemctl', 'is-active', 'mihomo-guard-firewall.service'])
+chain = run(['iptables', '-S', 'MIHOMO-GUARD'])
+print(json.dumps({
+    'guardEnabled': enabled.returncode == 0,
+    'guardActive': active.returncode == 0,
+    'guardInstalled': chain.returncode == 0,
+    'guardPorts': [7890, 7891, 1053],
+    'allowedNetworks': ['127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
+}, ensure_ascii=False))
+PY
+`;
+}
+
+function setRuntimeSettingsScript(settings) {
+  const enableGuard = settings.guardEnabled !== false;
+  const guardBody = guardFirewallScriptBody().replace(/'/g, `'\\''`);
+  return `${remoteBase()}
+if [ ${enableGuard ? "1" : "0"} = 1 ]; then
+  cat > /usr/local/sbin/mihomo-guard-firewall <<'EOF'
+${guardFirewallScriptBody()}
+EOF
+  chmod 755 /usr/local/sbin/mihomo-guard-firewall
+  cat > /etc/systemd/system/mihomo-guard-firewall.service <<'EOF'
+[Unit]
+Description=Protect Mihomo local proxy ports from public access
+After=network-online.target docker.service
+Before=mihomo.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mihomo-guard-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now mihomo-guard-firewall.service >/dev/null
+else
+  systemctl disable --now mihomo-guard-firewall.service >/dev/null 2>&1 || true
+  iptables -D INPUT -j MIHOMO-GUARD 2>/dev/null || true
+  iptables -F MIHOMO-GUARD 2>/dev/null || true
+  iptables -X MIHOMO-GUARD 2>/dev/null || true
+  if command -v ip6tables >/dev/null 2>&1; then
+    ip6tables -D INPUT -j MIHOMO-GUARD 2>/dev/null || true
+    ip6tables -F MIHOMO-GUARD 2>/dev/null || true
+    ip6tables -X MIHOMO-GUARD 2>/dev/null || true
+  fi
+fi
+${runtimeSettingsScript().replace(`${remoteBase()}\n`, "")}
 `;
 }
 
