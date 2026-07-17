@@ -7,8 +7,7 @@ Mihomo Manager WebUI is a web console for managing Mihomo on Linux. It covers th
 Core features:
 
 - Web login with `HttpOnly` cookie sessions.
-- Local mode by default: no SSH key or SSH password is required.
-- Optional remote mode for advanced deployments.
+- Local management only: no SSH key or SSH password is required.
 - Subscription management and subscription updates that preserve local non-subscription config.
 - Proxy group view, node cards, single-node delay tests, and current-group delay tests.
 - Mihomo config for Rule / Global / Direct, Mixed / HTTP / SOCKS, bind address, LAN access, and advanced TUN/Redir/TProxy settings.
@@ -28,7 +27,7 @@ Minimum host requirements:
 
 ## Recommended Deployment: Host Node.js
 
-This is the cleanest local mode because `MIHOMO_MODE=local` executes management scripts directly on the host.
+This is the cleanest deployment because the WebUI executes management scripts directly on the same host.
 
 ```bash
 git clone https://github.com/AptimLvStic/mihomo-manager-webui.git /opt/mihomo-manager-webui
@@ -44,7 +43,6 @@ WEBUI_USERNAME=admin
 WEBUI_PASSWORD=replace-with-a-strong-password
 WEBUI_SESSION_SECRET=replace-with-a-long-random-secret
 WEBUI_COOKIE_SECURE=false
-MIHOMO_MODE=local
 MIHOMO_LOCAL_RUNNER=direct
 ```
 
@@ -97,31 +95,9 @@ Healthcheck uses the public endpoint:
 curl http://127.0.0.1:5178/api/health
 ```
 
-## Local and Remote Modes
+## Local Management
 
-Local mode:
-
-```env
-MIHOMO_MODE=local
-```
-
-Local mode does not require `MIHOMO_HOST`, `MIHOMO_AUTH`, `MIHOMO_KEY`, or `MIHOMO_PASSWORD`.
-
-Remote mode is optional and intended for advanced deployments:
-
-```env
-MIHOMO_MODE=remote
-MIHOMO_HOST=server.example.com
-MIHOMO_USER=root
-MIHOMO_AUTH=key
-MIHOMO_KEY_PATH=/absolute/path/to/private_key
-```
-
-Remote key mode can use the optional Compose overlay:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ssh-key.yml up -d --build
-```
+This project manages Mihomo only on the same host. Remote hosts, SSH keys, and SSH passwords are not supported.
 
 ## Public Exposure Requirements
 

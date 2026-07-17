@@ -34,27 +34,27 @@ const mimeTypes = {
 };
 
 const readOnlyHandlers = {
-  status: () => runRemoteScript(statusScript()),
-  test: () => runRemoteScript(testScript(), 90_000),
-  ports: () => runRemoteScript(portsScript()),
-  "show-url": () => runRemoteScript(showUrlScript()),
-  "proxy-status": () => runRemoteScript(proxyStatusScript()),
-  "proxy-env": () => runRemoteScript(proxyEnvScript()),
-  timer: () => runRemoteScript(timerScript()),
-  "service-status": () => runRemoteScript(serviceStatusScript()),
-  "proxychains-show": () => runRemoteScript(proxychainsShowScript()),
-  lang: () => runRemoteScript(languageScript()),
+  status: () => runLocalScript(statusScript()),
+  test: () => runLocalScript(testScript(), 90_000),
+  ports: () => runLocalScript(portsScript()),
+  "show-url": () => runLocalScript(showUrlScript()),
+  "proxy-status": () => runLocalScript(proxyStatusScript()),
+  "proxy-env": () => runLocalScript(proxyEnvScript()),
+  timer: () => runLocalScript(timerScript()),
+  "service-status": () => runLocalScript(serviceStatusScript()),
+  "proxychains-show": () => runLocalScript(proxychainsShowScript()),
+  lang: () => runLocalScript(languageScript()),
 };
 
 const actionHandlers = {
-  update: () => runRemoteScript(updateScript(), 180_000),
-  start: () => runRemoteScript(startServiceScript(), 120_000),
-  stop: () => runRemoteScript(stopServiceScript(), 60_000),
-  restart: () => runRemoteScript(restartServiceScript(), 120_000),
-  select: () => runRemoteScript(selectOnlyScript(), 120_000),
-  "proxy-on": () => runRemoteScript(proxyOnScript()),
-  "proxy-off": () => runRemoteScript(proxyOffScript()),
-  proxychains: () => runRemoteScript(proxychainsConfigureScript()),
+  update: () => runLocalScript(updateScript(), 180_000),
+  start: () => runLocalScript(startServiceScript(), 120_000),
+  stop: () => runLocalScript(stopServiceScript(), 60_000),
+  restart: () => runLocalScript(restartServiceScript(), 120_000),
+  select: () => runLocalScript(selectOnlyScript(), 120_000),
+  "proxy-on": () => runLocalScript(proxyOnScript()),
+  "proxy-off": () => runLocalScript(proxyOffScript()),
+  proxychains: () => runLocalScript(proxychainsConfigureScript()),
 };
 
 createServer(async (req, res) => {
@@ -75,37 +75,11 @@ createServer(async (req, res) => {
 });
 
 function loadConfig() {
-  const mode = String(process.env.MIHOMO_MODE || "local").toLowerCase() === "remote" ? "remote" : "local";
-  if (mode === "local") {
-    return {
-      configured: true,
-      mode,
-      targetLabel: "Local Mihomo Host",
-      runtimeLabel: "本地管理通道",
-    };
-  }
-
-  const identityFile = process.env.MIHOMO_KEY || process.env.MIHOMO_KEY_FILE || "";
-  const password = process.env.MIHOMO_PASSWORD || "";
-  const auth = String(process.env.MIHOMO_AUTH || (password && !identityFile ? "password" : "key")).toLowerCase();
-  const host = process.env.MIHOMO_HOST || "";
-  const port = Number(process.env.MIHOMO_SSH_PORT || 22);
-  const user = process.env.MIHOMO_USER || "root";
-  if (!host) throw new Error("MIHOMO_HOST is required when MIHOMO_MODE=remote.");
-  if (!["key", "password"].includes(auth)) throw new Error("MIHOMO_AUTH must be key or password.");
-  if (auth === "key" && !identityFile) throw new Error("MIHOMO_KEY or MIHOMO_KEY_FILE is required when MIHOMO_AUTH=key.");
-  if (auth === "password" && !password) throw new Error("MIHOMO_PASSWORD is required when MIHOMO_AUTH=password.");
   return {
     configured: true,
-    mode,
-    host,
-    port,
-    user,
-    auth,
-    identityFile,
-    password,
-    targetLabel: `${host}:${port}`,
-    runtimeLabel: auth === "password" ? "SSH 密码管理通道" : "SSH 密钥管理通道",
+    mode: "local",
+    targetLabel: "Local Mihomo Host",
+    runtimeLabel: "本地管理通道",
   };
 }
 
@@ -399,33 +373,33 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/mihomo/proxy-settings") {
-    const result = await runRemoteScript(mihomoProxySettingsScript(), 60_000);
+    const result = await runLocalScript(mihomoProxySettingsScript(), 60_000);
     sendJsonResult(res, result);
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/mihomo/proxy-settings") {
     const body = await readBody(req);
-    const result = await runRemoteScript(setMihomoProxySettingsScript(body), 120_000);
+    const result = await runLocalScript(setMihomoProxySettingsScript(body), 120_000);
     sendJson(res, result.code === 0 ? 200 : 500, result);
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/runtime-settings") {
-    const result = await runRemoteScript(runtimeSettingsScript(), 60_000);
+    const result = await runLocalScript(runtimeSettingsScript(), 60_000);
     sendJsonResult(res, result);
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/runtime-settings") {
     const body = await readBody(req);
-    const result = await runRemoteScript(setRuntimeSettingsScript(body), 90_000);
+    const result = await runLocalScript(setRuntimeSettingsScript(body), 90_000);
     sendJsonResult(res, result);
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/traffic") {
-    const result = await runRemoteScript(trafficScript(), 20_000);
+    const result = await runLocalScript(trafficScript(), 20_000);
     sendJsonResult(res, result);
     return;
   }
@@ -433,13 +407,13 @@ async function handleApi(req, res) {
   if (req.method === "GET" && url.pathname === "/api/logs") {
     const target = url.searchParams.get("target") === "subscription" ? "subscription" : "mihomo";
     const lines = normalizeLines(url.searchParams.get("lines"));
-    const result = await runRemoteScript(logsScript(target, lines), 60_000);
+    const result = await runLocalScript(logsScript(target, lines), 60_000);
     sendJson(res, result.code === 0 ? 200 : 500, result);
     return;
   }
 
   if (req.method === "GET" && (url.pathname === "/api/proxies" || url.pathname === "/api/groups")) {
-    const result = await runRemoteScript(proxiesScript(), 60_000);
+    const result = await runLocalScript(proxiesScript(), 60_000);
     sendJsonResult(res, result);
     return;
   }
@@ -452,7 +426,7 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "Proxy group and node name are required." });
       return;
     }
-    const result = await runRemoteScript(selectProxyScript(group, name), 60_000);
+    const result = await runLocalScript(selectProxyScript(group, name), 60_000);
     sendJsonResult(res, result);
     return;
   }
@@ -475,13 +449,13 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "At least one proxy node name is required." });
       return;
     }
-    const result = await runRemoteScript(delayScript(names), 120_000);
+    const result = await runLocalScript(delayScript(names), 120_000);
     sendJsonResult(res, result);
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/rules") {
-    const result = await runRemoteScript(rulesScript(), 60_000);
+    const result = await runLocalScript(rulesScript(), 60_000);
     sendJsonResult(res, result);
     return;
   }
@@ -495,7 +469,7 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "Rule type and policy are required." });
       return;
     }
-    const result = await runRemoteScript(addRuleScript({ type: ruleType, payload, policy }), 120_000);
+    const result = await runLocalScript(addRuleScript({ type: ruleType, payload, policy }), 120_000);
     sendJson(res, result.code === 0 ? 200 : 500, result);
     return;
   }
@@ -514,7 +488,7 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/subscriptions") {
-    const result = await runRemoteScript(subscriptionsScript(), 60_000);
+    const result = await runLocalScript(subscriptionsScript(), 60_000);
     sendJsonResult(res, result);
     return;
   }
@@ -526,7 +500,7 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "Subscription URL must start with http:// or https://." });
       return;
     }
-    const result = await runRemoteScript(saveSubscriptionScript({
+    const result = await runLocalScript(saveSubscriptionScript({
       id: String(body.id || "").trim(),
       name: String(body.name || "").trim(),
       description: String(body.description || "").trim(),
@@ -550,7 +524,7 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "Subscription id is required." });
       return;
     }
-    const result = await runRemoteScript(selectSubscriptionScript(id), 60_000);
+    const result = await runLocalScript(selectSubscriptionScript(id), 60_000);
     sendJsonResult(res, result);
     return;
   }
@@ -558,7 +532,7 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/subscriptions/update") {
     const body = await readBody(req);
     const id = String(body.id || "").trim();
-    const result = await runRemoteScript(updateSubscriptionByIdScript(id), 180_000);
+    const result = await runLocalScript(updateSubscriptionByIdScript(id), 180_000);
     sendJson(res, result.code === 0 ? 200 : 500, result);
     return;
   }
@@ -570,13 +544,13 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "Subscription id is required." });
       return;
     }
-    const result = await runRemoteScript(deleteSubscriptionScript(id), 60_000);
+    const result = await runLocalScript(deleteSubscriptionScript(id), 60_000);
     sendJsonResult(res, result);
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/subscription/settings") {
-    const result = await runRemoteScript(subscriptionSettingsScript(), 60_000);
+    const result = await runLocalScript(subscriptionSettingsScript(), 60_000);
     sendJsonResult(res, result);
     return;
   }
@@ -588,7 +562,7 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "Subscription URL must start with http:// or https://." });
       return;
     }
-    const result = await runRemoteScript(setSubscriptionSettingsScript({
+    const result = await runLocalScript(setSubscriptionSettingsScript({
       name: String(body.name || "").trim(),
       description: String(body.description || "").trim(),
       url: nextUrl,
@@ -608,7 +582,7 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "Subscription URL must start with http:// or https://." });
       return;
     }
-    const result = await runRemoteScript(setSubscriptionUrlScript(subscriptionUrl), 180_000);
+    const result = await runLocalScript(setSubscriptionUrlScript(subscriptionUrl), 180_000);
     sendJson(res, result.code === 0 ? 200 : 500, result);
     return;
   }
@@ -620,7 +594,7 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "User-Agent cannot be empty." });
       return;
     }
-    const result = await runRemoteScript(setSubscriptionUaScript(userAgent), 180_000);
+    const result = await runLocalScript(setSubscriptionUaScript(userAgent), 180_000);
     sendJson(res, result.code === 0 ? 200 : 500, result);
     return;
   }
@@ -632,7 +606,7 @@ async function handleApi(req, res) {
       sendJson(res, 400, { ok: false, error: "Language must be zh or en." });
       return;
     }
-    const result = await runRemoteScript(setLanguageScript(lang));
+    const result = await runLocalScript(setLanguageScript(lang));
     sendJson(res, result.code === 0 ? 200 : 500, result);
     return;
   }
@@ -659,7 +633,7 @@ function serveStatic(req, res) {
   res.end(readFileSync(filePath));
 }
 
-function remoteBase() {
+function localBase() {
   return String.raw`set -euo pipefail
 CONFIG_DIR=/etc/mihomo
 ENV_FILE=$CONFIG_DIR/subscription.env
@@ -830,7 +804,7 @@ PY
 }
 
 function statusScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 load_subscription_env
 active=$(systemctl is-active mihomo.service 2>/dev/null || true)
 enabled=$(systemctl is-enabled mihomo.service 2>/dev/null || true)
@@ -878,14 +852,14 @@ ${proxyStatusBody()}
 }
 
 function portsScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 if [ "$WEBUI_LANG" = zh ]; then printf 'Mihomo 监听端口：\n'; else printf 'Mihomo listening ports:\n'; fi
 ss -ltnp 2>/dev/null | grep -E 'mihomo|:9090\\b' || true
 `;
 }
 
 function controllerJsonPython(body) {
-  return `${remoteBase()}
+  return `${localBase()}
 python3 - <<'PY'
 ${body}
 PY
@@ -1070,7 +1044,7 @@ print(json.dumps({
 
 function setMihomoProxySettingsScript(settings) {
   const encoded = Buffer.from(JSON.stringify(settings || {}), "utf8").toString("base64");
-  return `${remoteBase()}
+  return `${localBase()}
 payload=${shellQuote(encoded)}
 tmp_file=$(python3 - "$payload" "$CONFIG_FILE" <<'PY'
 import base64
@@ -1328,14 +1302,14 @@ emit("done", total=len(names), ok=ok_count, timeout=timeout_count)`);
 }
 
 function showUrlScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 load_subscription_env
 mask_url "$SUBSCRIPTION_URL"
 `;
 }
 
 function subscriptionSettingsScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 load_subscription_env
 masked_url=$(mask_url "$SUBSCRIPTION_URL")
 timer_state=$(systemctl is-enabled mihomo-subscription.timer 2>/dev/null || true)
@@ -1360,7 +1334,7 @@ PY
 }
 
 function subscriptionsScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 install -d -m 700 "$SUBSCRIPTIONS_DIR"
 if ! ls "$SUBSCRIPTIONS_DIR"/*.env >/dev/null 2>&1 && [ -r "$ENV_FILE" ]; then
   cp -a "$ENV_FILE" "$SUBSCRIPTIONS_DIR/default.env"
@@ -1449,7 +1423,7 @@ PY
 
 function saveSubscriptionScript(settings) {
   const encoded = Buffer.from(JSON.stringify(settings || {}), "utf8").toString("base64");
-  return `${remoteBase()}
+  return `${localBase()}
 install -d -m 700 "$SUBSCRIPTIONS_DIR"
 python3 - ${shellQuote(encoded)} "$SUBSCRIPTIONS_DIR" "$ENV_FILE" <<'PY'
 import base64
@@ -1514,7 +1488,7 @@ PY
 }
 
 function selectSubscriptionScript(id) {
-  return `${remoteBase()}
+  return `${localBase()}
 install -d -m 700 "$SUBSCRIPTIONS_DIR"
 id=${shellQuote(id)}
 case "$id" in *[!A-Za-z0-9_.-]*|'') printf '[ERROR] Invalid subscription id.\n' >&2; exit 1 ;; esac
@@ -1530,7 +1504,7 @@ PY
 }
 
 function deleteSubscriptionScript(id) {
-  return `${remoteBase()}
+  return `${localBase()}
 id=${shellQuote(id)}
 case "$id" in *[!A-Za-z0-9_.-]*|'') printf '[ERROR] Invalid subscription id.\n' >&2; exit 1 ;; esac
 src="$SUBSCRIPTIONS_DIR/$id.env"
@@ -1555,7 +1529,7 @@ PY
 
 function updateSubscriptionByIdScript(id) {
   const select = id ? selectSubscriptionScript(id) : "";
-  return `${remoteBase()}
+  return `${localBase()}
 ${id ? `id=${shellQuote(id)}
 case "$id" in *[!A-Za-z0-9_.-]*|'') printf '[ERROR] Invalid subscription id.\n' >&2; exit 1 ;; esac
 src="$SUBSCRIPTIONS_DIR/$id.env"
@@ -1568,7 +1542,7 @@ update_subscription
 }
 
 function trafficScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 python3 - <<'PY'
 import json
 import time
@@ -1638,7 +1612,7 @@ ensure_ipv6`;
 }
 
 function runtimeSettingsScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 python3 - <<'PY'
 import json
 import subprocess
@@ -1666,7 +1640,7 @@ PY
 function setRuntimeSettingsScript(settings) {
   const enableGuard = settings.guardEnabled !== false;
   const guardBody = guardFirewallScriptBody().replace(/'/g, `'\\''`);
-  return `${remoteBase()}
+  return `${localBase()}
 if [ ${enableGuard ? "1" : "0"} = 1 ]; then
   cat > /usr/local/sbin/mihomo-guard-firewall <<'EOF'
 ${guardFirewallScriptBody()}
@@ -1700,7 +1674,7 @@ else
     ip6tables -X MIHOMO-GUARD 2>/dev/null || true
   fi
 fi
-${runtimeSettingsScript().replace(`${remoteBase()}\n`, "")}
+${runtimeSettingsScript().replace(`${localBase()}\n`, "")}
 `;
 }
 
@@ -1714,7 +1688,7 @@ function setSubscriptionSettingsScript(settings) {
   const autoUpdate = settings.autoUpdate ? "1" : "0";
   const systemProxy = settings.systemProxy ? "1" : "0";
   const kernelUpdate = settings.kernelUpdate ? "1" : "0";
-  return `${remoteBase()}
+  return `${localBase()}
 load_subscription_env
 new_name=$(printf '%s' ${shellQuote(encoded.name)} | base64 -d)
 new_description=$(printf '%s' ${shellQuote(encoded.description)} | base64 -d)
@@ -1752,7 +1726,7 @@ fi
 
 function addRuleScript(rule) {
   const encoded = Buffer.from(JSON.stringify(rule), "utf8").toString("base64");
-  return `${remoteBase()}
+  return `${localBase()}
 payload=${shellQuote(encoded)}
 tmp_file=$(python3 - "$payload" "$CONFIG_FILE" <<'PY'
 import base64
@@ -1846,13 +1820,13 @@ fi`;
 }
 
 function proxyStatusScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 ${proxyStatusBody()}
 `;
 }
 
 function proxyEnvScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 load_core_proxy_env
 cat <<EOF
 export http_proxy="$HTTP_PROXY_URL"
@@ -1868,7 +1842,7 @@ EOF
 }
 
 function proxyOnScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 load_core_proxy_env
 cat > "$PROFILE_PROXY" <<EOF
 # Managed by mihomo-manager-webui. Applies to new login shells.
@@ -1900,7 +1874,7 @@ fi
 }
 
 function proxyOffScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 rm -f "$PROFILE_PROXY" "$APT_PROXY"
 if [ "$WEBUI_LANG" = zh ]; then
   printf '[信息] 系统代理文件已移除。\n'
@@ -1913,27 +1887,27 @@ fi
 }
 
 function timerScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 systemctl --no-pager --full status mihomo-subscription.timer 2>/dev/null | sed -n '1,25p' || true
 systemctl list-timers --all mihomo-subscription.timer --no-pager 2>/dev/null || true
 `;
 }
 
 function serviceStatusScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 systemctl --no-pager --full status mihomo.service | sed -n '1,35p'
 `;
 }
 
 function logsScript(target, lines) {
   const unit = target === "subscription" ? "mihomo-subscription.service" : "mihomo.service";
-  return `${remoteBase()}
+  return `${localBase()}
 journalctl -u ${shellQuote(unit)} -n ${Number(lines)} --no-pager
 `;
 }
 
 function languageScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 if [ "$WEBUI_LANG" = zh ]; then
   printf '当前语言：%s\n' "$WEBUI_LANG"
 else
@@ -1943,7 +1917,7 @@ fi
 }
 
 function setLanguageScript(lang) {
-  return `${remoteBase()}
+  return `${localBase()}
 install -d -m 700 "$CONFIG_DIR"
 tmp_file=$(mktemp)
 {
@@ -1961,7 +1935,7 @@ fi
 }
 
 function proxychainsConfigureScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 if ! command -v proxychains4 >/dev/null 2>&1; then
   if [ "$WEBUI_LANG" = zh ]; then printf '[错误] proxychains4 未安装。\n' >&2; else printf '[ERROR] proxychains4 is not installed.\n' >&2; fi
   exit 1
@@ -1986,7 +1960,7 @@ if [ "$WEBUI_LANG" = zh ]; then printf '[信息] Proxychains 配置已更新：%
 }
 
 function proxychainsShowScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 if [ "$WEBUI_LANG" = zh ]; then printf 'Proxychains 配置文件：%s\n' "$PROXYCHAINS_CONF"; else printf 'Proxychains config file: %s\n' "$PROXYCHAINS_CONF"; fi
 if [ -r "$PROXYCHAINS_CONF" ]; then
   sed -n '1,120p' "$PROXYCHAINS_CONF"
@@ -1997,7 +1971,7 @@ fi
 }
 
 function testScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 if ! command -v curl >/dev/null 2>&1; then
   if [ "$WEBUI_LANG" = zh ]; then printf '[错误] 缺少命令：curl\n' >&2; else printf '[ERROR] Missing command: curl\n' >&2; fi
   exit 1
@@ -2135,7 +2109,7 @@ PY
 }
 
 function updateScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 ${updateFunctionBody()}
 update_subscription
 `;
@@ -2143,7 +2117,7 @@ update_subscription
 
 function setSubscriptionUrlScript(url) {
   const encoded = Buffer.from(url, "utf8").toString("base64");
-  return `${remoteBase()}
+  return `${localBase()}
 ${updateFunctionBody()}
 new_url=$(printf '%s' ${shellQuote(encoded)} | base64 -d)
 case "$new_url" in
@@ -2159,7 +2133,7 @@ update_subscription
 
 function setSubscriptionUaScript(ua) {
   const encoded = Buffer.from(ua, "utf8").toString("base64");
-  return `${remoteBase()}
+  return `${localBase()}
 ${updateFunctionBody()}
 new_ua=$(printf '%s' ${shellQuote(encoded)} | base64 -d)
 if [ -z "$new_ua" ]; then
@@ -2174,14 +2148,14 @@ update_subscription
 }
 
 function selectOnlyScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 ${selectFunctionBody()}
 select_working_proxy
 `;
 }
 
 function startServiceScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 ${selectFunctionBody()}
 systemctl start mihomo.service
 sleep 2
@@ -2191,14 +2165,14 @@ systemctl is-active mihomo.service
 }
 
 function stopServiceScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 systemctl stop mihomo.service
 systemctl is-active mihomo.service || true
 `;
 }
 
 function restartServiceScript() {
-  return `${remoteBase()}
+  return `${localBase()}
 ${selectFunctionBody()}
 systemctl restart mihomo.service
 sleep 2
@@ -2207,36 +2181,12 @@ systemctl is-active mihomo.service
 `;
 }
 
-function runRemoteScript(script, timeoutMs = 90_000) {
+function runLocalScript(script, timeoutMs = 90_000) {
   const { command, args, env } = buildScriptProcess();
   return runScriptProcess(command, args, script, timeoutMs, env);
 }
 
 function buildScriptProcess() {
-  if (config.mode === "remote") {
-    const knownHostsFile = process.env.SSH_KNOWN_HOSTS_FILE || "/tmp/mihomo_manager_known_hosts";
-    const sshArgs = ["-p", String(config.port), "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + knownHostsFile];
-    let command = "ssh";
-    let args = sshArgs;
-    let env = process.env;
-    if (config.auth === "key") {
-      args = ["-i", config.identityFile, "-o", "BatchMode=yes", ...sshArgs];
-    } else {
-      command = "sshpass";
-      args = [
-        "-e",
-        "ssh",
-        "-o",
-        "PreferredAuthentications=password",
-        "-o",
-        "PubkeyAuthentication=no",
-        ...sshArgs,
-      ];
-      env = { ...process.env, SSHPASS: config.password };
-    }
-    return { command, args: [...args, `${config.user}@${config.host}`, "bash -s"], env };
-  }
-
   const runner = String(process.env.MIHOMO_LOCAL_RUNNER || "direct").toLowerCase();
   if (runner === "nsenter") {
     const nsenter = process.env.NSENTER_BIN || "/usr/bin/nsenter";

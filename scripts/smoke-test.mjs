@@ -43,6 +43,8 @@ assert(cookie, "login should set a cookie");
 
 result = await request("/api/config");
 assert(result.response.status === 200 && result.payload.ok === true, "GET /api/config after login should return 200");
+assert(result.payload.data.mode === "local", "GET /api/config should report local mode");
+assert(result.payload.data.auth === "local", "GET /api/config should report local authentication");
 
 result = await request("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
 assert(result.response.status === 200 && result.payload.ok === true, "POST /api/auth/logout should return 200");
