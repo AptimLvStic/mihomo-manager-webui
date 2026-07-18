@@ -6,8 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "check": "node --check server.js && node --check public/app.js && bash -n scripts/update-mihomo-subscription",
-    "test": "node scripts/smoke-test.mjs"
+    "check": "node --check server.js && node --check public/app.js && node --check test/local-only.test.mjs && bash -n scripts/update-mihomo-subscription",
+    "test:unit": "node --test test/*.test.mjs",
+    "test": "npm run test:unit && node scripts/smoke-test.mjs"
   },
   "engines": {
     "node": ">=20"
